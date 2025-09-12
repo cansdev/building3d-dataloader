@@ -1,0 +1,5 @@
+*.png
+.cursorrules
+._pycache_
+__pycache__
+.venv
