@@ -82,17 +82,19 @@ def main():
     print("Training completed successfully!")
     print("="*60)
     
-    while False:
-        choice = input("\nDo you want to run PointNet2 visualization? (y/n): ").strip().lower()
-        if choice in ['y', 'yes']:
-            run_visualization()
-            break
-        elif choice in ['n', 'no']:
-            print("Skipping visualization. You can run it later with:")
-            print("python visualize/visualize_pointnet2.py")
-            break
-        else:
-            print("Please enter 'y' for yes or 'n' for no")
+    # debugging visualization currently obsolete
+    if False:
+        while True:
+            choice = input("\nDo you want to run PointNet2 visualization? (y/n): ").strip().lower()
+            if choice in ['y', 'yes']:
+                run_visualization()
+                break
+            elif choice in ['n', 'no']:
+                print("Skipping visualization. You can run it later with:")
+                print("python visualize/visualize_pointnet2.py")
+                break
+            else:
+                print("Please enter 'y' for yes or 'n' for no")
 
 if __name__ == "__main__":
     main()
