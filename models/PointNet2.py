@@ -71,6 +71,8 @@ class PointNet2(nn.Module):
     def get_loss(self, pred, target, trans_feat=None):
         """
         Simple cross-entropy loss for demonstration
+        Note: This is kept for backward compatibility. 
+        For corner detection, use the comprehensive loss functions from losses.corner_loss
         """
         total_loss = F.cross_entropy(pred, target)
         return total_loss
