@@ -19,6 +19,96 @@ def cfg_from_yaml_file(cfg_file):
     cfg = EasyDict(new_config)
     return cfg
 
+def create_coordinate_frames(positions, size=0.1):
+    """Create coordinate frames at multiple positions"""
+    try:
+        import open3d as o3d
+        frames = []
+        for pos in positions:
+            frame = o3d.geometry.TriangleMesh.create_coordinate_frame(
+                size=size, origin=pos
+            )
+            frames.append(frame)
+        return frames
+    except ImportError:
+        return []
+
+def add_boundary_box(min_coords, max_coords):
+    """Create boundary box lines for better spatial reference"""
+    try:
+        import open3d as o3d
+        
+        # Define the 8 corners of the bounding box
+        corners = np.array([
+            [min_coords[0], min_coords[1], min_coords[2]],  # 0: min corner
+            [max_coords[0], min_coords[1], min_coords[2]],  # 1: +X
+            [min_coords[0], max_coords[1], min_coords[2]],  # 2: +Y
+            [max_coords[0], max_coords[1], min_coords[2]],  # 3: +X+Y
+            [min_coords[0], min_coords[1], max_coords[2]],  # 4: +Z
+            [max_coords[0], min_coords[1], max_coords[2]],  # 5: +X+Z
+            [min_coords[0], max_coords[1], max_coords[2]],  # 6: +Y+Z
+            [max_coords[0], max_coords[1], max_coords[2]]   # 7: max corner
+        ])
+        
+        # Define the 12 edges of the bounding box
+        edges = np.array([
+            # Bottom face (Z = min)
+            [0, 1], [1, 3], [3, 2], [2, 0],
+            # Top face (Z = max)
+            [4, 5], [5, 7], [7, 6], [6, 4],
+            # Vertical edges
+            [0, 4], [1, 5], [2, 6], [3, 7]
+        ])
+        
+        # Create line set for boundary box
+        line_set = o3d.geometry.LineSet()
+        line_set.points = o3d.utility.Vector3dVector(corners)
+        line_set.lines = o3d.utility.Vector2iVector(edges)
+        
+        # Color boundary lines yellow/orange for visibility
+        colors = [[1.0, 0.6, 0.0] for _ in range(len(edges))]  # Orange
+        line_set.colors = o3d.utility.Vector3dVector(colors)
+        
+        return line_set
+    except ImportError:
+        return None
+
+def visualize_with_coordinate_display(geometries, title, point_cloud=None):
+    """Enhanced visualization with coordinate frame and better interaction"""
+    try:
+        import open3d as o3d
+        
+        # Create visualizer with better settings
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(window_name=title, width=1200, height=800)
+        
+        # Add geometries
+        for geom in geometries:
+            vis.add_geometry(geom)
+        
+        # Configure render options for better visualization
+        render_option = vis.get_render_option()
+        render_option.point_size = 2.0
+        render_option.line_width = 2.0
+        
+        # Get view control for better default view
+        view_control = vis.get_view_control()
+        view_control.set_zoom(0.8)
+        
+        # Run the visualizer
+        vis.run()
+        vis.destroy_window()
+        
+    except ImportError:
+        pass
+    except Exception as e:
+        # Fallback to basic visualization
+        try:
+            import open3d as o3d
+            o3d.visualization.draw_geometries(geometries, window_name=title)
+        except:
+            pass
+
 def visualize_point_cloud_matplotlib(point_cloud, title="Point Cloud", max_points=1000):
     """Visualize point cloud using matplotlib"""
     fig = plt.figure(figsize=(12, 8))
@@ -50,8 +140,8 @@ def visualize_point_cloud_matplotlib(point_cloud, title="Point Cloud", max_point
     
     return fig, ax
 
-def visualize_point_cloud_open3d(point_cloud, title="Point Cloud"):
-    """Visualize point cloud using Open3D"""
+def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordinate_frame=True, show_boundaries=False, coordinate_frame_size=0.1):
+    """Visualize point cloud using Open3D with simple axis lines and optional boundaries"""
     try:
         import open3d as o3d
         
@@ -66,9 +156,52 @@ def visualize_point_cloud_open3d(point_cloud, title="Point Cloud"):
                 colors = colors / 255.0
             pcd.colors = o3d.utility.Vector3dVector(colors)
         
-        # Visualize
-        print(f"Displaying {title} using Open3D...")
-        o3d.visualization.draw_geometries([pcd], window_name=title)
+        # Create list of geometries to visualize
+        geometries = [pcd]
+        
+        # Add simple axis lines instead of arrows
+        if show_coordinate_frame:
+            axis_size = coordinate_frame_size
+            
+            # Create simple line segments for X, Y, Z axes
+            # X axis (red)
+            x_line = o3d.geometry.LineSet()
+            x_line.points = o3d.utility.Vector3dVector([[0, 0, 0], [axis_size, 0, 0]])
+            x_line.lines = o3d.utility.Vector2iVector([[0, 1]])
+            x_line.colors = o3d.utility.Vector3dVector([[1, 0, 0]])  # Red
+            geometries.append(x_line)
+            
+            # Y axis (green)
+            y_line = o3d.geometry.LineSet()
+            y_line.points = o3d.utility.Vector3dVector([[0, 0, 0], [0, axis_size, 0]])
+            y_line.lines = o3d.utility.Vector2iVector([[0, 1]])
+            y_line.colors = o3d.utility.Vector3dVector([[0, 1, 0]])  # Green
+            geometries.append(y_line)
+            
+            # Z axis (blue)
+            z_line = o3d.geometry.LineSet()
+            z_line.points = o3d.utility.Vector3dVector([[0, 0, 0], [0, 0, axis_size]])
+            z_line.lines = o3d.utility.Vector2iVector([[0, 1]])
+            z_line.colors = o3d.utility.Vector3dVector([[0, 0, 1]])  # Blue
+            geometries.append(z_line)
+        
+        # Add boundary box if requested
+        if show_boundaries:
+            coords = point_cloud[:, :3]
+            min_coords = np.min(coords, axis=0)
+            max_coords = np.max(coords, axis=0)
+            boundary_box = add_boundary_box(min_coords, max_coords)
+            if boundary_box is not None:
+                geometries.append(boundary_box)
+                
+            # Print boundary information
+            print(f"\n=== Data Boundaries for {title} ===")
+            print(f"X range: [{min_coords[0]:.3f}, {max_coords[0]:.3f}]")
+            print(f"Y range: [{min_coords[1]:.3f}, {max_coords[1]:.3f}]")
+            print(f"Z range: [{min_coords[2]:.3f}, {max_coords[2]:.3f}]")
+        
+        # Simple visualization without extra coordinate display
+        o3d.visualization.draw_geometries(geometries, window_name=title)
         
         return pcd
         
@@ -101,8 +234,8 @@ def visualize_wireframe_matplotlib(vertices, edges, title="Wireframe", color='bl
     
     return fig, ax
 
-def visualize_wireframe_open3d(vertices, edges, title="Wireframe"):
-    """Visualize wireframe using Open3D"""
+def visualize_wireframe_open3d(vertices, edges, title="Wireframe", show_coordinate_frame=True, show_boundaries=False, coordinate_frame_size=0.1):
+    """Visualize wireframe using Open3D with coordinate text labels on vertices and optional boundaries"""
     try:
         import open3d as o3d
         
@@ -120,9 +253,57 @@ def visualize_wireframe_open3d(vertices, edges, title="Wireframe"):
         colors = [[0, 0, 1] for _ in range(len(edges))]
         line_set.colors = o3d.utility.Vector3dVector(colors)
         
-        # Visualize
-        print(f"Displaying {title} using Open3D...")
-        o3d.visualization.draw_geometries([line_set, pcd], window_name=title)
+        # Create list of geometries to visualize
+        geometries = [line_set, pcd]
+        
+        # Add simple axis lines instead of arrows
+        if show_coordinate_frame:
+            axis_size = coordinate_frame_size
+            
+            # Create simple line segments for X, Y, Z axes
+            # X axis (red)
+            x_line = o3d.geometry.LineSet()
+            x_line.points = o3d.utility.Vector3dVector([[0, 0, 0], [axis_size, 0, 0]])
+            x_line.lines = o3d.utility.Vector2iVector([[0, 1]])
+            x_line.colors = o3d.utility.Vector3dVector([[1, 0, 0]])  # Red
+            geometries.append(x_line)
+            
+            # Y axis (green)
+            y_line = o3d.geometry.LineSet()
+            y_line.points = o3d.utility.Vector3dVector([[0, 0, 0], [0, axis_size, 0]])
+            y_line.lines = o3d.utility.Vector2iVector([[0, 1]])
+            y_line.colors = o3d.utility.Vector3dVector([[0, 1, 0]])  # Green
+            geometries.append(y_line)
+            
+            # Z axis (blue)
+            z_line = o3d.geometry.LineSet()
+            z_line.points = o3d.utility.Vector3dVector([[0, 0, 0], [0, 0, axis_size]])
+            z_line.lines = o3d.utility.Vector2iVector([[0, 1]])
+            z_line.colors = o3d.utility.Vector3dVector([[0, 0, 1]])  # Blue
+            geometries.append(z_line)
+        
+        # Add boundary box if requested
+        if show_boundaries:
+            min_coords = np.min(vertices, axis=0)
+            max_coords = np.max(vertices, axis=0)
+            boundary_box = add_boundary_box(min_coords, max_coords)
+            if boundary_box is not None:
+                geometries.append(boundary_box)
+                
+            # Print boundary information
+            print(f"\n=== Wireframe Boundaries for {title} ===")
+            print(f"X range: [{min_coords[0]:.3f}, {max_coords[0]:.3f}]")
+            print(f"Y range: [{min_coords[1]:.3f}, {max_coords[1]:.3f}]")
+            print(f"Z range: [{min_coords[2]:.3f}, {max_coords[2]:.3f}]")
+        
+        # Create text labels for each vertex showing coordinates
+        # Note: Open3D doesn't have built-in text rendering, so we'll print coordinates to console for now
+        print(f"\n=== Vertex Coordinates for {title} ===")
+        for i, vertex in enumerate(vertices):
+            print(f"Vertex {i}: ({vertex[0]:.3f}, {vertex[1]:.3f}, {vertex[2]:.3f})")
+        
+        # Simple visualization
+        o3d.visualization.draw_geometries(geometries, window_name=title)
         
         return line_set, pcd
         
@@ -184,8 +365,8 @@ def visualize_combined_matplotlib(point_cloud, vertices, edges, title="Combined 
     plt.tight_layout()
     return fig
 
-def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View"):
-    """Visualize point cloud and wireframe together using Open3D"""
+def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View", show_coordinate_frame=True, show_boundaries=False, coordinate_frame_size=0.1):
+    """Visualize point cloud and wireframe together using Open3D with coordinate frame and boundaries"""
     try:
         import open3d as o3d
         
@@ -215,9 +396,53 @@ def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View
         edge_colors = [[0, 0, 1] for _ in range(len(edges))]
         line_set.colors = o3d.utility.Vector3dVector(edge_colors)
         
-        # Visualize all together
-        print(f"Displaying {title} using Open3D...")
-        o3d.visualization.draw_geometries([pcd, line_set, vertex_pcd], window_name=title)
+        # Create list of geometries to visualize
+        geometries = [pcd, line_set, vertex_pcd]
+        
+        # Add simple axis lines instead of arrows
+        if show_coordinate_frame:
+            axis_size = coordinate_frame_size
+            
+            # Create simple line segments for X, Y, Z axes
+            # X axis (red)
+            x_line = o3d.geometry.LineSet()
+            x_line.points = o3d.utility.Vector3dVector([[0, 0, 0], [axis_size, 0, 0]])
+            x_line.lines = o3d.utility.Vector2iVector([[0, 1]])
+            x_line.colors = o3d.utility.Vector3dVector([[1, 0, 0]])  # Red
+            geometries.append(x_line)
+            
+            # Y axis (green)
+            y_line = o3d.geometry.LineSet()
+            y_line.points = o3d.utility.Vector3dVector([[0, 0, 0], [0, axis_size, 0]])
+            y_line.lines = o3d.utility.Vector2iVector([[0, 1]])
+            y_line.colors = o3d.utility.Vector3dVector([[0, 1, 0]])  # Green
+            geometries.append(y_line)
+            
+            # Z axis (blue)
+            z_line = o3d.geometry.LineSet()
+            z_line.points = o3d.utility.Vector3dVector([[0, 0, 0], [0, 0, axis_size]])
+            z_line.lines = o3d.utility.Vector2iVector([[0, 1]])
+            z_line.colors = o3d.utility.Vector3dVector([[0, 0, 1]])  # Blue
+            geometries.append(z_line)
+        
+        # Add boundary box if requested
+        if show_boundaries:
+            # Combine point cloud and wireframe coordinates for overall boundaries
+            all_coords = np.vstack([point_cloud[:, :3], vertices])
+            min_coords = np.min(all_coords, axis=0)
+            max_coords = np.max(all_coords, axis=0)
+            boundary_box = add_boundary_box(min_coords, max_coords)
+            if boundary_box is not None:
+                geometries.append(boundary_box)
+                
+            # Print boundary information
+            print(f"\n=== Combined Data Boundaries for {title} ===")
+            print(f"X range: [{min_coords[0]:.3f}, {max_coords[0]:.3f}]")
+            print(f"Y range: [{min_coords[1]:.3f}, {max_coords[1]:.3f}]")
+            print(f"Z range: [{min_coords[2]:.3f}, {max_coords[2]:.3f}]")
+        
+        # Simple visualization
+        o3d.visualization.draw_geometries(geometries, window_name=title)
         
         return pcd, line_set, vertex_pcd
         
@@ -280,6 +505,24 @@ def select_visualization_type():
         else:
             print("Please enter 1, 2, or 3")
 
+def select_coordinate_options():
+    """Select coordinate visualization options for Open3D"""
+    print("\nCoordinate frame options:")
+    print("1. Show coordinate frame at origin")
+    print("2. Show coordinate frame + boundaries")
+    print("3. No coordinate aids")
+    
+    while True:
+        choice = input("Choose coordinate option (1, 2, or 3): ").strip()
+        if choice == "1":
+            return True, False  # show_frame, show_boundaries
+        elif choice == "2":
+            return True, True   # show_frame, show_boundaries
+        elif choice == "3":
+            return False, False # show_frame, show_boundaries
+        else:
+            print("Please enter 1, 2, or 3")
+
 def main():
     """Main visualization function"""
     print("=" * 50)
@@ -326,6 +569,11 @@ def main():
     # Select visualization backend
     backend = select_visualization_backend()
     
+    # Get coordinate options for Open3D
+    show_frame, show_boundaries = False, False
+    if backend == "open3d":
+        show_frame, show_boundaries = select_coordinate_options()
+    
     # Perform visualization
     sample_name = os.path.basename(dataset.pc_files[sample_idx]).replace('.xyz', '')
     
@@ -341,12 +589,27 @@ def main():
             plt.show()
             
     else:  # Open3D
+        # Determine coordinate frame size based on data bounds
+        coord_size = 0.1
+        if show_frame:
+            bounds = np.max(np.abs(point_cloud[:, :3]))
+            coord_size = bounds * 0.1  # 10% of data bounds
+            
         if viz_type == 1:  # Point cloud only
-            visualize_point_cloud_open3d(point_cloud, f"Point Cloud - {sample_name}")
+            visualize_point_cloud_open3d(
+                point_cloud, f"Point Cloud - {sample_name}", 
+                show_frame, show_boundaries, coord_size
+            )
         elif viz_type == 2:  # Wireframe only
-            visualize_wireframe_open3d(vertices, edges, f"Wireframe - {sample_name}")
+            visualize_wireframe_open3d(
+                vertices, edges, f"Wireframe - {sample_name}",
+                show_frame, show_boundaries, coord_size
+            )
         else:  # Combined
-            visualize_combined_open3d(point_cloud, vertices, edges, f"Combined View - {sample_name}")
+            visualize_combined_open3d(
+                point_cloud, vertices, edges, f"Combined View - {sample_name}",
+                show_frame, show_boundaries, coord_size
+            )
     
     print("\nVisualization complete!")
 

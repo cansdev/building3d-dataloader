@@ -13,6 +13,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from collections import defaultdict
+from utils.normalization import normalize_data
 
 
 def load_wireframe(wireframe_file):
@@ -117,13 +118,7 @@ class Building3DReconstructionDataset(Dataset):
 
         # ------------------------------- Dataset Preprocessing ------------------------------
         if self.normalize:
-            centroid = np.mean(point_cloud[:, 0:3], axis=0)
-            point_cloud[:, 0:3] -= centroid
-            max_distance = np.max(np.linalg.norm(point_cloud[:, 0:3], axis=1))
-            point_cloud[:, 0:3] /= max_distance
-
-            wf_vertices -= centroid
-            wf_vertices /= max_distance
+            point_cloud, wf_vertices, centroid, max_distance = normalize_data(point_cloud, wf_vertices)
 
         if self.num_points:
             point_cloud = random_sampling(point_cloud, self.num_points)
