@@ -15,7 +15,6 @@ from torch.utils.data import Dataset
 from collections import defaultdict
 from utils.normalization import normalize_data
 
-
 def load_wireframe(wireframe_file):
     vertices = []
     edges = set()
@@ -118,7 +117,9 @@ class Building3DReconstructionDataset(Dataset):
 
         # ------------------------------- Dataset Preprocessing ------------------------------
         if self.normalize:
-            point_cloud, wf_vertices, centroid, max_distance = normalize_data(point_cloud, wf_vertices)
+            point_cloud, wf_vertices, centroid, max_distance, normals = normalize_data(
+                point_cloud, wf_vertices, compute_normals=True, k_neighbors=10  # Enable normals for pipeline
+            )
 
         if self.num_points:
             point_cloud = random_sampling(point_cloud, self.num_points)

@@ -140,8 +140,37 @@ def visualize_point_cloud_matplotlib(point_cloud, title="Point Cloud", max_point
     
     return fig, ax
 
-def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordinate_frame=True, show_boundaries=False, coordinate_frame_size=0.1):
-    """Visualize point cloud using Open3D with simple axis lines and optional boundaries"""
+def create_normal_lines(points, normals, normal_length=0.05):
+    """Create line segments to visualize surface normals"""
+    try:
+        import open3d as o3d
+        
+        # Create line endpoints
+        start_points = points
+        end_points = points + normals * normal_length
+        
+        # Combine all points
+        all_points = np.vstack([start_points, end_points])
+        
+        # Create line indices (each normal is one line)
+        n_points = len(points)
+        lines = np.array([[i, i + n_points] for i in range(n_points)])
+        
+        # Create line set
+        line_set = o3d.geometry.LineSet()
+        line_set.points = o3d.utility.Vector3dVector(all_points)
+        line_set.lines = o3d.utility.Vector2iVector(lines)
+        
+        # Color normal lines cyan for visibility
+        colors = [[0.0, 1.0, 1.0] for _ in range(len(lines))]  # Cyan
+        line_set.colors = o3d.utility.Vector3dVector(colors)
+        
+        return line_set
+    except ImportError:
+        return None
+
+def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordinate_frame=True, show_boundaries=False, show_normals=False, coordinate_frame_size=0.1):
+    """Visualize point cloud using Open3D with simple axis lines, optional boundaries, and explicit normal lines"""
     try:
         import open3d as o3d
         
@@ -158,6 +187,27 @@ def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordina
         
         # Create list of geometries to visualize
         geometries = [pcd]
+        
+        # Add explicit normal visualization if available and requested
+        has_normals = point_cloud.shape[1] >= 11
+        if has_normals and show_normals:
+            normals = point_cloud[:, 8:11]
+            points = point_cloud[:, :3]
+            
+            # Set point cloud normals for Open3D
+            pcd.normals = o3d.utility.Vector3dVector(normals)
+            
+            # Create explicit normal line segments for better visibility
+            normal_lines = create_normal_lines(points, normals, normal_length=0.03)
+            if normal_lines is not None:
+                geometries.append(normal_lines)
+                print(f"✅ Visualizing {len(normals)} surface normals as cyan line segments")
+            else:
+                print(f"✅ Visualizing {len(normals)} surface normals (Open3D built-in)")
+        elif has_normals:
+            print(f"ℹ️  Point cloud has normals (use show_normals=True to display)")
+        
+        # Add geometries list continues...
         
         # Add simple axis lines instead of arrows
         if show_coordinate_frame:
@@ -365,8 +415,8 @@ def visualize_combined_matplotlib(point_cloud, vertices, edges, title="Combined 
     plt.tight_layout()
     return fig
 
-def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View", show_coordinate_frame=True, show_boundaries=False, coordinate_frame_size=0.1):
-    """Visualize point cloud and wireframe together using Open3D with coordinate frame and boundaries"""
+def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View", show_coordinate_frame=True, show_boundaries=False, show_normals=False, coordinate_frame_size=0.1):
+    """Visualize point cloud and wireframe together using Open3D with coordinate frame, boundaries, and optional normals"""
     try:
         import open3d as o3d
         
@@ -398,6 +448,25 @@ def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View
         
         # Create list of geometries to visualize
         geometries = [pcd, line_set, vertex_pcd]
+        
+        # Add explicit normal visualization if available and requested
+        has_normals = point_cloud.shape[1] >= 11
+        if has_normals and show_normals:
+            normals = point_cloud[:, 8:11]
+            points = point_cloud[:, :3]
+            
+            # Set point cloud normals for Open3D
+            pcd.normals = o3d.utility.Vector3dVector(normals)
+            
+            # Create explicit normal line segments for better visibility
+            normal_lines = create_normal_lines(points, normals, normal_length=0.03)
+            if normal_lines is not None:
+                geometries.append(normal_lines)
+                print(f"✅ Visualizing {len(normals)} surface normals as cyan line segments on point cloud")
+            else:
+                print(f"✅ Visualizing {len(normals)} surface normals on point cloud (Open3D built-in)")
+        elif has_normals:
+            print(f"ℹ️  Point cloud has normals (use show_normals=True to display)")
         
         # Add simple axis lines instead of arrows
         if show_coordinate_frame:
@@ -510,18 +579,21 @@ def select_coordinate_options():
     print("\nCoordinate frame options:")
     print("1. Show coordinate frame at origin")
     print("2. Show coordinate frame + boundaries")
-    print("3. No coordinate aids")
+    print("3. Show coordinate frame + boundaries + normals")
+    print("4. No coordinate aids")
     
     while True:
-        choice = input("Choose coordinate option (1, 2, or 3): ").strip()
+        choice = input("Choose coordinate option (1, 2, 3, or 4): ").strip()
         if choice == "1":
-            return True, False  # show_frame, show_boundaries
+            return True, False, False  # show_frame, show_boundaries, show_normals
         elif choice == "2":
-            return True, True   # show_frame, show_boundaries
+            return True, True, False   # show_frame, show_boundaries, show_normals
         elif choice == "3":
-            return False, False # show_frame, show_boundaries
+            return True, True, True    # show_frame, show_boundaries, show_normals
+        elif choice == "4":
+            return False, False, False # show_frame, show_boundaries, show_normals
         else:
-            print("Please enter 1, 2, or 3")
+            print("Please enter 1, 2, 3, or 4")
 
 def main():
     """Main visualization function"""
@@ -570,9 +642,9 @@ def main():
     backend = select_visualization_backend()
     
     # Get coordinate options for Open3D
-    show_frame, show_boundaries = False, False
+    show_frame, show_boundaries, show_normals = False, False, False
     if backend == "open3d":
-        show_frame, show_boundaries = select_coordinate_options()
+        show_frame, show_boundaries, show_normals = select_coordinate_options()
     
     # Perform visualization
     sample_name = os.path.basename(dataset.pc_files[sample_idx]).replace('.xyz', '')
@@ -598,7 +670,7 @@ def main():
         if viz_type == 1:  # Point cloud only
             visualize_point_cloud_open3d(
                 point_cloud, f"Point Cloud - {sample_name}", 
-                show_frame, show_boundaries, coord_size
+                show_frame, show_boundaries, show_normals, coord_size
             )
         elif viz_type == 2:  # Wireframe only
             visualize_wireframe_open3d(
@@ -608,7 +680,7 @@ def main():
         else:  # Combined
             visualize_combined_open3d(
                 point_cloud, vertices, edges, f"Combined View - {sample_name}",
-                show_frame, show_boundaries, coord_size
+                show_frame, show_boundaries, show_normals, coord_size
             )
     
     print("\nVisualization complete!")

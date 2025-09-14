@@ -5,6 +5,22 @@
 # @File    : __init__.py
 # @Purpose : Utils module exports
 
-from .normalization import normalize_data, denormalize_data, get_normalization_params
+from .normalization import (
+    normalize_data, 
+    denormalize_data, 
+    get_normalization_params,
+    estimate_normals,
+    orient_normals_consistently,
+    extract_normals,
+    validate_normals
+)
 
-__all__ = ['normalize_data', 'denormalize_data', 'get_normalization_params']
+__all__ = [
+    'normalize_data', 
+    'denormalize_data', 
+    'get_normalization_params',
+    'estimate_normals',
+    'orient_normals_consistently', 
+    'extract_normals',
+    'validate_normals'
+]
