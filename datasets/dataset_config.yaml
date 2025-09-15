@@ -1,7 +1,9 @@
 Building3D:
   root_dir: './datasets/demo_dataset' # Building3D dataset root dir
-  num_points: 2560
+  num_points: 5120
   use_color: True
   use_intensity: True
   normalize: True
   augment: True
+  use_surface_grouping: True  # Enable surface-aware processing
+  use_outlier_removal: True  # Enable outlier removal (can be overridden programmatically)

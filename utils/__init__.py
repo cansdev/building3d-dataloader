@@ -15,12 +15,44 @@ from .normalization import (
     validate_normals
 )
 
+from .outlier_removal import (
+    clean_point_cloud,
+    remove_statistical_outliers,
+    remove_radius_outliers,
+    remove_elevation_outliers,
+    remove_density_outliers,
+    validate_point_cloud_quality,
+    NeighborCache,
+    auto_scale_radius
+)
+
+from .surface_grouping import (
+    surface_grouping_pipeline,
+    surface_aware_normalization_pipeline,
+    process_all_surface_groups,
+    SurfaceGroup,
+    get_surface_group_summary
+)
+
 __all__ = [
     'normalize_data', 
     'denormalize_data', 
     'get_normalization_params',
     'estimate_normals',
-    'orient_normals_consistently', 
+    'orient_normals_consistently',
     'extract_normals',
-    'validate_normals'
+    'validate_normals',
+    'clean_point_cloud',
+    'remove_statistical_outliers',
+    'remove_radius_outliers',
+    'remove_elevation_outliers',
+    'remove_density_outliers',
+    'validate_point_cloud_quality',
+    'NeighborCache',
+    'auto_scale_radius',
+    'surface_grouping_pipeline',
+    'surface_aware_normalization_pipeline',
+    'process_all_surface_groups',
+    'SurfaceGroup',
+    'get_surface_group_summary'
 ]
