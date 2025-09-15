@@ -8,6 +8,7 @@ from datasets import build_dataset
 from datasets.building3d import load_wireframe
 import yaml
 from easydict import EasyDict
+from utils.weight_assignment import compute_border_weights
 
 def cfg_from_yaml_file(cfg_file):
     """Load configuration from YAML file"""
@@ -313,7 +314,52 @@ def color_points_by_group_instance(point_cloud):
         return None
 
 
-def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordinate_frame=True, show_boundaries=False, show_normals=False, color_by_normal_quality=False, color_by_surface_type=False, color_by_group_instance=False, coordinate_frame_size=0.1):
+def color_points_by_border_weights(point_cloud):
+    """
+    Color points based on their border weights (geometric border-ness).
+    Highlights edges and corners that form object borders.
+    """
+    try:
+        import open3d as o3d
+        
+        # Extract only XYZ coordinates for weight calculation
+        points_xyz = point_cloud[:, :3]
+        
+        # Compute border weights
+        border_weights = compute_border_weights(points_xyz, k_neighbors=25, normalize_weights=True)
+        
+        # Create color map: blue (low border weight) to red (high border weight)
+        colors = np.zeros((len(point_cloud), 3))
+        
+        # Use a blue-to-red colormap for border weights
+        from matplotlib import cm
+        colormap = cm.get_cmap('coolwarm')  # Blue-to-red
+        
+        # Apply colormap
+        for i, weight in enumerate(border_weights):
+            rgb_color = colormap(weight)[:3]  # Extract RGB, ignore alpha
+            colors[i] = rgb_color
+        
+        print(f"\n=== Border Weight Distribution ===")
+        high_border = np.sum(border_weights > 0.7)
+        medium_border = np.sum((border_weights > 0.3) & (border_weights <= 0.7))
+        low_border = np.sum(border_weights <= 0.3)
+        total = len(point_cloud)
+        
+        print(f"🔵 Low border weights (≤0.3): {low_border} points ({100*low_border/total:.1f}%) - Blue")
+        print(f"🟢 Medium border weights (0.3-0.7): {medium_border} points ({100*medium_border/total:.1f}%) - Green")
+        print(f"🔴 High border weights (>0.7): {high_border} points ({100*high_border/total:.1f}%) - Red")
+        
+        return colors
+        
+    except ImportError:
+        return None
+
+
+
+
+
+def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordinate_frame=True, show_boundaries=False, show_normals=False, color_by_normal_quality=False, color_by_surface_type=False, color_by_group_instance=False, color_by_border_weights=False, coordinate_frame_size=0.1):
     """Visualize point cloud using Open3D with simple axis lines, optional boundaries, and explicit normal lines"""
     try:
         import open3d as o3d
@@ -322,21 +368,25 @@ def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordina
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(point_cloud[:, :3])
         
-        # Choose coloring scheme
-        if color_by_group_instance:
-            # Color by group instance (highest priority)
+        # Choose coloring scheme (priority order)
+        if color_by_border_weights:
+            # Border weight colors (highest priority for weight analysis)
+            border_colors = color_points_by_border_weights(point_cloud)
+            if border_colors is not None:
+                pcd.colors = o3d.utility.Vector3dVector(border_colors)
+            else:
+                print("⚠️  Border weight calculation failed, using group instance colors")
+                color_by_group_instance = True
+        elif color_by_group_instance:
+            # Color by group instance (second priority)
             group_colors = color_points_by_group_instance(point_cloud)
             if group_colors is not None:
                 pcd.colors = o3d.utility.Vector3dVector(group_colors)
             else:
                 print("⚠️  No group instance data available, using surface type colors")
-                surface_colors = color_points_by_surface_type(point_cloud)
-                if surface_colors is not None:
-                    pcd.colors = o3d.utility.Vector3dVector(surface_colors)
-                else:
-                    print("⚠️  No surface labels available, using default colors")
+                color_by_surface_type = True
         elif color_by_surface_type:
-            # Color by surface type (second priority)
+            # Color by surface type (third priority)
             surface_colors = color_points_by_surface_type(point_cloud)
             if surface_colors is not None:
                 pcd.colors = o3d.utility.Vector3dVector(surface_colors)
@@ -592,7 +642,7 @@ def visualize_combined_matplotlib(point_cloud, vertices, edges, title="Combined 
     plt.tight_layout()
     return fig
 
-def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View", show_coordinate_frame=True, show_boundaries=False, show_normals=False, color_by_normal_quality=False, color_by_surface_type=False, color_by_group_instance=False, coordinate_frame_size=0.1):
+def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View", show_coordinate_frame=True, show_boundaries=False, show_normals=False, color_by_normal_quality=False, color_by_surface_type=False, color_by_group_instance=False, color_by_border_weights=False, coordinate_frame_size=0.1):
     """Visualize point cloud and wireframe together using Open3D with coordinate frame, boundaries, and optional normals"""
     try:
         import open3d as o3d
@@ -601,9 +651,17 @@ def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(point_cloud[:, :3])
         
-        # Choose coloring scheme for point cloud
-        if color_by_group_instance:
-            # Color by group instance (highest priority)
+        # Choose coloring scheme for point cloud (priority order)
+        if color_by_border_weights:
+            # Border weight colors (highest priority for weight analysis)
+            border_colors = color_points_by_border_weights(point_cloud)
+            if border_colors is not None:
+                pcd.colors = o3d.utility.Vector3dVector(border_colors)
+            else:
+                print("⚠️  Border weight calculation failed, using group instance colors")
+                color_by_group_instance = True
+        elif color_by_group_instance:
+            # Color by group instance (second priority)
             group_colors = color_points_by_group_instance(point_cloud)
             if group_colors is not None:
                 pcd.colors = o3d.utility.Vector3dVector(group_colors)
@@ -615,7 +673,7 @@ def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View
                 else:
                     print("⚠️  No surface labels available, using default colors")
         elif color_by_surface_type:
-            # Color by surface type (second priority)
+            # Color by surface type (third priority)
             surface_colors = color_points_by_surface_type(point_cloud)
             if surface_colors is not None:
                 pcd.colors = o3d.utility.Vector3dVector(surface_colors)
@@ -809,26 +867,29 @@ def select_coordinate_options():
     print("4. Show coordinate frame + boundaries + normal quality colors")
     print("5. Show coordinate frame + boundaries + group instance colors")
     print("6. Show coordinate frame + boundaries + group instance colors + normals")
-    print("7. No coordinate aids")
+    print("7. Show coordinate frame + boundaries + border weight colors")
+    print("8. No coordinate aids")
     
     while True:
-        choice = input("Choose coordinate option (1-7): ").strip()
+        choice = input("Choose coordinate option (1-8): ").strip()
         if choice == "1":
-            return True, False, False, False, False, False  # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance
+            return True, False, False, False, False, False, False  # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
         elif choice == "2":
-            return True, True, False, False, False, False   # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance
+            return True, True, False, False, False, False, False   # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
         elif choice == "3":
-            return True, True, True, False, False, False    # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance
+            return True, True, True, False, False, False, False    # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
         elif choice == "4":
-            return True, True, False, True, False, False    # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance
+            return True, True, False, True, False, False, False    # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
         elif choice == "5":
-            return True, True, False, False, False, True    # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance
+            return True, True, False, False, False, True, False    # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
         elif choice == "6":
-            return True, True, True, False, False, True     # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance
+            return True, True, True, False, False, True, False     # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
         elif choice == "7":
-            return False, False, False, False, False, False # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance
+            return True, True, False, False, False, False, True    # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
+        elif choice == "8":
+            return False, False, False, False, False, False, False # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
         else:
-            print("Please enter 1-7")
+            print("Please enter 1-8")
 
 def main():
     """Main visualization function"""
@@ -885,9 +946,9 @@ def main():
     backend = select_visualization_backend()
     
     # Get coordinate options for Open3D
-    show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance = False, False, False, False, False, False
+    show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights = False, False, False, False, False, False, False
     if backend == "open3d":
-        show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance = select_coordinate_options()
+        show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights = select_coordinate_options()
     
     # Perform visualization
     sample_name = os.path.basename(dataset.pc_files[sample_idx]).replace('.xyz', '')
@@ -913,7 +974,7 @@ def main():
         if viz_type == 1:  # Point cloud only
             visualize_point_cloud_open3d(
                 point_cloud, f"Point Cloud - {sample_name}", 
-                show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, coord_size
+                show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights, coord_size
             )
         elif viz_type == 2:  # Wireframe only
             visualize_wireframe_open3d(
@@ -923,7 +984,7 @@ def main():
         else:  # Combined
             visualize_combined_open3d(
                 point_cloud, vertices, edges, f"Combined View - {sample_name}",
-                show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, coord_size
+                show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights, coord_size
             )
     
     print("\nVisualization complete!")
