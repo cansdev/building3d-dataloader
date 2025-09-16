@@ -3,7 +3,8 @@ from .corner_loss import (
     DistanceWeightedLoss, 
     CornerDetectionLoss,
     AdaptiveCornerLoss,
-    create_corner_labels_improved
+    create_corner_labels_improved,
+    create_corner_labels
 )
 
 __all__ = [
@@ -11,5 +12,6 @@ __all__ = [
     'DistanceWeightedLoss',
     'CornerDetectionLoss', 
     'AdaptiveCornerLoss',
-    'create_corner_labels_improved'
+    'create_corner_labels_improved',
+    'create_corner_labels'
 ]

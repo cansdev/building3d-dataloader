@@ -178,11 +178,9 @@ class Building3DReconstructionDataset(Dataset):
         for key, val in input_dict.items():
             try:
                 if key in ['wf_vertices', 'wf_edges', 'wf_centers', 'wf_edges_vertices']:
-                    max_len = max([len(v) for v in val])
-                    wf = np.ones((len(batch), max_len, val[0].shape[-1]), dtype=np.float32) * -1e1
-                    for i in range(len(batch)):
-                        wf[i, :len(val[i]), :] = val[i]
-                    ret_dict[key] = torch.from_numpy(wf)
+                    # For Hungarian matching, we don't need padding - just return as list
+                    # The training loop will handle variable lengths
+                    ret_dict[key] = [torch.from_numpy(v.astype(np.float32)) for v in val]
                 else:
                     ret_dict[key] = torch.tensor(np.array(input_dict[key]))
             except:

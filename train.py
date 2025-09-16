@@ -2,8 +2,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from models.PointNet2 import PointNet2CornerDetection
+from models.PointNet2 import PointNet2CornerDetection, PointNet2CornerDetectionHungarian
 from losses import CornerDetectionLoss, AdaptiveCornerLoss, create_corner_labels_improved
+from losses.hungarian_loss import HungarianMatcher, SetCriterion
 import os
 import numpy as np
 
@@ -155,5 +156,124 @@ def train_model(train_loader, test_loader, dataset_config):
     final_model_path = 'output/corner_detection_model.pth'
     torch.save(model.state_dict(), final_model_path)
     print(f'Final model saved: {final_model_path}')
+    
+    return model
+
+
+def train_model_hungarian(train_loader, test_loader, dataset_config):
+    """
+    Train PointNet2 model with Hungarian matching
+    
+    Args:
+        train_loader: DataLoader for training data
+        test_loader: DataLoader for test data  
+        dataset_config: Dataset configuration
+    """
+    # Initialize model
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Determine input channels based on dataset config
+    input_channels = 3  # xyz coordinates
+    if dataset_config.Building3D.use_color:
+        input_channels += 4  # rgba
+    if dataset_config.Building3D.use_intensity:
+        input_channels += 1  # intensity
+    
+    model = PointNet2CornerDetectionHungarian(input_channels=input_channels, num_queries=50)
+    model = model.to(device)
+    
+    # Initialize Hungarian matcher and loss
+    matcher = HungarianMatcher(cost_class=1.0, cost_coord=5.0)
+    weight_dict = {"loss_ce": 1, "loss_bbox": 5}
+    criterion = SetCriterion(
+        num_classes=1, 
+        matcher=matcher, 
+        weight_dict=weight_dict, 
+        eos_coef=0.1,
+        losses=['labels', 'boxes']
+    )
+    
+    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-3)
+    
+    # Training parameters
+    num_epochs = 1000
+    print(f"Starting Hungarian training on {device}")
+    print(f"Model input channels: {input_channels}")
+    print(f"Training samples: {len(train_loader.dataset)}")
+    print(f"Test samples: {len(test_loader.dataset)}")
+    
+    # Training loop
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss = 0.0
+        num_batches = 0
+        
+        for batch_idx, batch in enumerate(train_loader):
+            # Move data to device
+            point_clouds = batch['point_clouds'].to(device)  # [B, N, C]
+            wf_vertices_list = batch['wf_vertices']  # List of tensors
+            
+            # Create targets for Hungarian matching
+            targets = []
+            for b in range(point_clouds.shape[0]):
+                wf_vertices_b = wf_vertices_list[b].to(device)  # [M, 3]
+                
+                # Remove padded values (marked with -1e1)
+                valid_mask = wf_vertices_b[:, 0] > -1e0
+                valid_corners = wf_vertices_b[valid_mask]
+                
+                if len(valid_corners) > 0:
+                    targets.append({
+                        'labels': torch.ones(len(valid_corners), dtype=torch.long, device=device),
+                        'boxes': valid_corners
+                    })
+                else:
+                    # Empty target for samples with no corners
+                    targets.append({
+                        'labels': torch.zeros(0, dtype=torch.long, device=device),
+                        'boxes': torch.zeros(0, 3, device=device)
+                    })
+            
+            # Zero gradients
+            optimizer.zero_grad()
+            
+            # Forward pass
+            outputs = model(point_clouds)
+            
+            # Compute Hungarian loss
+            loss_dict = criterion(outputs, targets)
+            loss = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+            
+            # Backward pass
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            num_batches += 1
+            
+            if batch_idx % 10 == 0:
+                print(f'Epoch {epoch}, Batch {batch_idx}, Total Loss: {loss.item():.4f}, '
+                      f'CE: {loss_dict["loss_ce"].item():.4f}, '
+                      f'BBox: {loss_dict["loss_bbox"].item():.4f}')
+        
+        avg_loss = total_loss / num_batches
+        print(f'Epoch {epoch} completed. Average Loss: {avg_loss:.4f}')
+        
+        # Save model checkpoint
+        if epoch % 10 == 0:
+            checkpoint_path = f'output/checkpoint_hungarian_epoch_{epoch}.pth'
+            os.makedirs('output', exist_ok=True)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': avg_loss,
+            }, checkpoint_path)
+            print(f'Checkpoint saved: {checkpoint_path}')
+    
+    # Save final model
+    final_model_path = 'output/corner_detection_model_hungarian.pth'
+    torch.save(model.state_dict(), final_model_path)
+    print(f'Final Hungarian model saved: {final_model_path}')
     
     return model

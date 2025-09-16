@@ -6,7 +6,7 @@ from datasets import build_dataset
 import yaml
 from easydict import EasyDict
 from torch.utils.data import DataLoader
-from train import train_model
+from train import train_model, train_model_hungarian
 
 def cfg_from_yaml_file(cfg_file):
         with open(cfg_file, 'r') as f:
@@ -46,7 +46,8 @@ def train_with_preprocessed_data():
     )
     
     # Call training function with preprocessed data
-    model = train_model(train_loader, test_loader, dataset_config)
+    # Use Hungarian matching for better accuracy
+    model = train_model_hungarian(train_loader, test_loader, dataset_config)
     return model
 
 def run_visualization():

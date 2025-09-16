@@ -129,8 +129,8 @@ class PointNet2CornerDetection(nn.Module):
         Input:
             xyz: point cloud data [B, N, C] 
         Output:
-            corner_logits: per-point corner predictions [B, N]
-            corner_features: per-point features [B, 128, N]
+            corner_logits: [B, N] binary classification logits per point
+            corner_features: [B, 128, N] per-point features
         """
         B, N, C = xyz.shape
         
@@ -155,36 +155,144 @@ class PointNet2CornerDetection(nn.Module):
         l1_points = self.fp2(l1_xyz, l2_xyz, l1_points, l2_points)
         l0_points = self.fp1(l0_xyz, l1_xyz, l0_points, l1_points)
         
-        # Point-wise classification head
+        # Binary classification head
         feat = F.relu(self.bn1(self.conv1(l0_points)))
         feat = self.drop1(feat)
-        corner_logits = self.conv2(feat)  # [B, 1, N]
-        corner_logits = corner_logits.squeeze(1)  # [B, N]
+        corner_logits = self.conv2(feat).squeeze(1)  # [B, N]
         
         return corner_logits, l0_points
+
+
+
+class PointNet2CornerDetectionHungarian(nn.Module):
+    """
+    PointNet2 for corner detection with Hungarian matching support
+    """
+    def __init__(self, input_channels=3, num_queries=50):
+        super(PointNet2CornerDetectionHungarian, self).__init__()
+        # Feature channels = total channels - 3 (xyz coordinates)
+        feature_channels = max(0, input_channels - 3)
+        self.input_channels = input_channels
+        self.feature_channels = feature_channels
+        self.num_queries = num_queries
+        
+        print(f"    HungarianCornerNet init: total_channels={input_channels}, feature_channels={feature_channels}, num_queries={num_queries}")
+        
+        # Set Abstraction layers with 4x, 8x, 16x, 64x downsampling
+        # SA1: 4x downsampling (2560 -> 640 points)
+        self.sa1 = PointNetSetAbstractionMsg(640, [0.05, 0.1], [16, 32], feature_channels, [[32, 32, 64], [64, 64, 128]])
+        
+        # SA2: 8x downsampling (640 -> 320 points) 
+        self.sa2 = PointNetSetAbstractionMsg(320, [0.1, 0.2], [16, 32], 192, [[64, 64, 128], [128, 128, 256]])
+        
+        # SA3: 16x downsampling (320 -> 160 points)
+        self.sa3 = PointNetSetAbstractionMsg(160, [0.2, 0.4], [16, 32], 384, [[128, 128, 256], [256, 256, 512]])
+        
+        # SA4: 64x downsampling (160 -> 40 points)
+        self.sa4 = PointNetSetAbstraction(40, 0.4, 32, 768 + 3, [256, 512, 1024], False)
+        
+        # Feature Propagation layers (upsampling)
+        # FP4: 40 -> 160 points
+        self.fp4 = PointNetFeaturePropagation(1024 + 768, [512, 512])
+        
+        # FP3: 160 -> 320 points  
+        self.fp3 = PointNetFeaturePropagation(512 + 384, [512, 256])
+        
+        # FP2: 320 -> 640 points
+        self.fp2 = PointNetFeaturePropagation(256 + 192, [256, 128])
+        
+        # FP1: 640 -> 2560 points (back to original)
+        self.fp1 = PointNetFeaturePropagation(128 + feature_channels, [128, 128, 128])
+        
+        # Global feature extraction for query-based prediction
+        self.global_pool = nn.AdaptiveAvgPool1d(1)
+        self.global_proj = nn.Linear(1024, 128)  # Project global features to query dimension
+        
+        # Query-based prediction head
+        self.query_embed = nn.Embedding(num_queries, 128)
+        self.corner_embed = nn.Sequential(
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, 4)  # [x, y, z, confidence]
+        )
+
+    def forward(self, xyz):
+        """
+        Input:
+            xyz: point cloud data [B, N, C] 
+        Output:
+            dict with 'pred_logits' [B, N_q, 1] and 'pred_boxes' [B, N_q, 3]
+        """
+        B, N, C = xyz.shape
+        
+        # Extract coordinates (first 3 dimensions)
+        l0_xyz = xyz[:, :, 0:3].permute(0, 2, 1).contiguous()
+        
+        # Use additional features if available (C > 3)
+        if C > 3:
+            l0_points = xyz[:, :, 3:C].permute(0, 2, 1).contiguous()
+        else:
+            l0_points = None
+        
+        # Encoder: 4 Set Abstraction layers with downsampling
+        l1_xyz, l1_points = self.sa1(l0_xyz, l0_points)
+        l2_xyz, l2_points = self.sa2(l1_xyz, l1_points)
+        l3_xyz, l3_points = self.sa3(l2_xyz, l2_points)
+        l4_xyz, l4_points = self.sa4(l3_xyz, l3_points)
+        
+        # Decoder: 4 Feature Propagation layers with upsampling
+        l3_points = self.fp4(l3_xyz, l4_xyz, l3_points, l4_points)
+        l2_points = self.fp3(l2_xyz, l3_xyz, l2_points, l3_points)  
+        l1_points = self.fp2(l1_xyz, l2_xyz, l1_points, l2_points)
+        l0_points = self.fp1(l0_xyz, l1_xyz, l0_points, l1_points)
+        
+        # Global feature extraction
+        global_features = self.global_pool(l4_points).squeeze(-1)  # [B, 1024]
+        global_features_proj = self.global_proj(global_features)  # [B, 128]
+        
+        # Query-based prediction
+        query_embeds = self.query_embed.weight.unsqueeze(0).expand(B, -1, -1)  # [B, N_q, 128]
+        
+        # Combine global features with query embeddings
+        query_features = query_embeds + global_features_proj.unsqueeze(1)  # [B, N_q, 128]
+        
+        # Predict corner coordinates and confidence
+        corner_outputs = self.corner_embed(query_features)  # [B, N_q, 4]
+        corner_coords = corner_outputs[:, :, :3]  # [B, N_q, 3]
+        corner_logits = corner_outputs[:, :, 3]   # [B, N_q]
+        
+        return {
+            'pred_logits': corner_logits.unsqueeze(-1),  # [B, N_q, 1]
+            'pred_boxes': corner_coords,  # [B, N_q, 3]
+        }
     
     def get_corner_predictions(self, xyz, threshold=0.5):
         """
-        Get predicted corner points above threshold
+        Get predicted corner points above threshold for Hungarian model
         
         Returns:
             corner_points: [B, K, 3] where K is number of predicted corners
             corner_scores: [B, K] confidence scores
         """
         with torch.no_grad():
-            corner_logits, _ = self.forward(xyz)
-            corner_probs = torch.sigmoid(corner_logits)  # [B, N]
+            outputs = self.forward(xyz)
+            corner_probs = torch.sigmoid(outputs['pred_logits'].squeeze(-1))  # [B, N_q]
+            corner_coords = outputs['pred_boxes']  # [B, N_q, 3]
             
             batch_corners = []
             batch_scores = []
             
             for b in range(xyz.shape[0]):
-                # Get points above threshold
+                # Get queries above threshold
                 mask = corner_probs[b] > threshold
                 if mask.sum() > 0:
-                    corner_coords = xyz[b, mask, :3]  # [K, 3]
+                    corner_coords_b = corner_coords[b, mask]  # [K, 3]
                     corner_confidences = corner_probs[b, mask]  # [K]
-                    batch_corners.append(corner_coords)
+                    batch_corners.append(corner_coords_b)
                     batch_scores.append(corner_confidences)
                 else:
                     # No corners found
@@ -192,3 +300,4 @@ class PointNet2CornerDetection(nn.Module):
                     batch_scores.append(torch.zeros(0, device=xyz.device))
             
             return batch_corners, batch_scores
+

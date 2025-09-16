@@ -266,7 +266,7 @@ def main():
             input_channels += 1
         
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model_path = '../output/corner_detection_model.pth'
+        model_path = '../output/corner_detection_model_hungarian.pth'
         
         if not os.path.exists(model_path):
             print(f"Error: Model file not found at {model_path}")
