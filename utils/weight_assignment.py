@@ -163,6 +163,9 @@ def calculate_edge_weights(eigenvalues):
     # Adaptive thickness scoring based on eigenvalue pattern
     cross_line_indicator = (lambda2_safe > 0.3 * lambda1_safe) & (lambda3_safe < 0.2 * lambda2_safe)
     
+    # Enhanced edge cross detection - more specific pattern for intersections
+    edge_cross_pattern = (lambda2_safe > 0.25 * lambda1_safe) & (lambda2_safe < 0.7 * lambda1_safe) & (lambda3_safe < 0.15 * lambda2_safe)
+    
     # Standard thickness scoring for regular edges
     thickness_score_std = np.where(thickness_ratio < 0.4, thickness_ratio * 2.5, 1.0 - thickness_ratio)
     
@@ -171,8 +174,14 @@ def calculate_edge_weights(eigenvalues):
                                     thickness_ratio * 1.8 + 0.2,  # More tolerant
                                     1.2 - thickness_ratio)        # Gentler penalty
     
+    # Special scoring for edge crosses - even more tolerant
+    thickness_score_edge_cross = np.where(thickness_ratio < 0.65,
+                                         thickness_ratio * 1.5 + 0.3,  # Very tolerant for edge crosses
+                                         1.3 - thickness_ratio)        # Very gentle penalty
+    
     # Choose appropriate thickness scoring
-    thickness_score = np.where(cross_line_indicator, thickness_score_cross, thickness_score_std)
+    thickness_score = np.where(edge_cross_pattern, thickness_score_edge_cross,
+                              np.where(cross_line_indicator, thickness_score_cross, thickness_score_std))
     thickness_score = np.clip(thickness_score, 0, 1)
     
     # Measure 3: Adaptive third dimension handling
@@ -189,33 +198,41 @@ def calculate_edge_weights(eigenvalues):
                                     1.0 - third_dim_ratio * 8)    # Stronger penalty
     third_dim_suppression = np.clip(third_dim_suppression, 0, 1)
     
-    # Measure 4: Cross-line and junction detection
+    # Measure 4: Enhanced cross-line and junction detection
     # Detect potential line intersections and complex edge geometry
-    junction_score = np.where(cross_line_indicator & (eigenvalue_dominance > 0.5),
-                             0.8 + 0.2 * eigenvalue_dominance,  # Boost junction areas
-                             0.5)  # Neutral for regular edges
+    # Edge crosses have characteristic eigenvalue patterns: λ1 dominant, λ2 moderate, λ3 small
+    edge_cross_indicator = (lambda2_safe > 0.25 * lambda1_safe) & (lambda2_safe < 0.7 * lambda1_safe) & (lambda3_safe < 0.15 * lambda2_safe)
+    
+    # Enhanced junction scoring with stronger emphasis on edge crosses
+    junction_score = np.where(edge_cross_indicator & (eigenvalue_dominance > 0.5),
+                             0.9 + 0.3 * eigenvalue_dominance,  # Strong boost for edge crosses
+                             np.where(cross_line_indicator & (eigenvalue_dominance > 0.5),
+                                     0.8 + 0.2 * eigenvalue_dominance,  # Boost junction areas
+                                     0.5))  # Neutral for regular edges
     
     # Measure 5: Slope-aware edge quality
     # Consider the 3D orientation and slope characteristics
     slope_awareness = np.minimum(1.0, eigenvalue_dominance * 1.5)
     
-    # More conservative combination to reduce false positives
-    edge_weights = (0.45 * linearity +           # Increased weight for core linearity
-                   0.30 * thickness_score +      # Standard thickness importance
-                   0.15 * third_dim_suppression +# Keep 3D suppression
-                   0.05 * junction_score +       # Reduced junction boost
-                   0.05 * slope_awareness)       # Minimal slope awareness
+    # More sophisticated combination emphasizing edge crosses
+    edge_weights = (0.40 * linearity +           # Slightly reduced core linearity weight
+                   0.25 * thickness_score +      # Reduced thickness importance  
+                   0.12 * third_dim_suppression +# Keep 3D suppression
+                   0.15 * junction_score +       # Increased junction boost for edge crosses
+                   0.08 * slope_awareness)       # Increased slope awareness
     
-    # Stricter filtering to reduce false positives
+    # Stricter filtering to reduce false positives, but more tolerant for edge crosses
     # Require stronger linearity for edge detection
-    min_linearity_threshold = np.where(eigenvalue_dominance > 0.7, 0.4, 0.6)  # Higher thresholds
+    min_linearity_threshold = np.where(edge_cross_pattern, 0.3,  # Very tolerant for edge crosses
+                                      np.where(eigenvalue_dominance > 0.7, 0.4, 0.6))  # Higher thresholds for others
     min_linearity_mask = linearity < min_linearity_threshold
-    edge_weights[min_linearity_mask] *= 0.2  # Stronger penalty
+    edge_weights[min_linearity_mask] *= np.where(edge_cross_pattern[min_linearity_mask], 0.6, 0.2)  # Less penalty for edge crosses
     
-    # Stricter thickness filtering
-    thick_threshold = np.where(cross_line_indicator, 0.65, 0.55)  # Stricter thresholds
+    # Stricter thickness filtering, but tolerant for edge crosses
+    thick_threshold = np.where(edge_cross_pattern, 0.75,  # Very tolerant for edge crosses
+                              np.where(cross_line_indicator, 0.65, 0.55))  # Stricter thresholds for others
     thick_mask = thickness_ratio > thick_threshold
-    edge_weights[thick_mask] *= 0.3  # Stronger penalty
+    edge_weights[thick_mask] *= np.where(edge_cross_pattern[thick_mask], 0.7, 0.3)  # Less penalty for edge crosses
     
     # Enhanced isotropic suppression for false positive reduction
     isotropic_mask = (thickness_ratio > 0.7) & (third_dim_ratio > 0.4) & (eigenvalue_dominance < 0.5)
@@ -225,9 +242,13 @@ def calculate_edge_weights(eigenvalues):
     clear_edge_mask = (linearity > 0.75) & (eigenvalue_dominance > 0.75) & (thickness_ratio < 0.4)
     edge_weights[clear_edge_mask] *= 1.15  # Reduced boost
     
-    # More conservative cross/junction detection
+    # Enhanced cross/junction detection with stronger emphasis on edge crosses
+    enhanced_cross_junction_mask = edge_cross_indicator & (eigenvalue_dominance > 0.65) & (linearity > 0.5)
+    edge_weights[enhanced_cross_junction_mask] *= 1.3  # Strong boost for edge crosses
+    
+    # Standard cross/junction detection  
     cross_junction_mask = cross_line_indicator & (eigenvalue_dominance > 0.75) & (linearity > 0.6)
-    edge_weights[cross_junction_mask] *= 1.1  # Reduced boost
+    edge_weights[cross_junction_mask] *= 1.1  # Moderate boost for general junctions
     
     # Conservative slope enhancement - only for very clear cases
     slope_edge_mask = (eigenvalue_dominance > 0.8) & (third_dim_ratio < 0.15) & (linearity > 0.7)
@@ -298,7 +319,8 @@ def calculate_vertex_weights(eigenvalues):
     ratio_32 = lambda3_safe / lambda2_safe
     
     # Building corners often have: moderate λ2/λ1 ratio, smaller λ3/λ2 ratio
-    building_corner = ratio_21 * (1.0 - ratio_32)
+    # Enhanced building corner detection - more permissive for 3D corners
+    building_corner = ratio_21 * np.maximum(0.3, (1.0 - ratio_32))  # Allow some λ3 contribution
     
     # Combine all measures with adaptive weights
     combined_response = (0.2 * harris_classic +     # Classic Harris
@@ -320,11 +342,14 @@ def calculate_vertex_weights(eigenvalues):
             normalized_component = component / np.max(component)
             vertex_weights += weight * normalized_component
     
-    # Adaptive thresholding based on data distribution
+    # Adaptive thresholding based on data distribution - MUCH MORE PERMISSIVE
     if np.max(vertex_weights) > 0:
-        # Use percentile-based thresholding instead of fixed threshold
-        threshold = np.percentile(vertex_weights[vertex_weights > 0], 60)  # Top 40%
-        vertex_weights = np.where(vertex_weights > threshold, vertex_weights, 0)
+        # Use much lower percentile-based thresholding to keep more corners
+        threshold = np.percentile(vertex_weights[vertex_weights > 0], 85)  # Top 15% instead of top 40%
+        # Also use a minimum absolute threshold to catch medium-strength corners
+        abs_threshold = 0.15 * np.max(vertex_weights)  # Accept corners with 15% of max response
+        combined_threshold = min(threshold, abs_threshold)
+        vertex_weights = np.where(vertex_weights > combined_threshold, vertex_weights, 0)
     
     # Additional enhancement for missed corners
     # Look for points with good corner characteristics even if response is moderate
@@ -343,17 +368,18 @@ def calculate_vertex_weights(eigenvalues):
     corner_candidates = two_significant & good_3d_structure & not_too_linear & not_too_planar
     vertex_weights[corner_candidates] = np.maximum(vertex_weights[corner_candidates], 0.3)
     
-    # Remove clearly inappropriate points
-    # Too linear: very small λ2 relative to λ1
-    too_linear = lambda2_safe < 0.05 * lambda1_safe
+    # Remove clearly inappropriate points - MUCH MORE PERMISSIVE
+    # Too linear: very small λ2 relative to λ1 - relaxed threshold
+    too_linear = lambda2_safe < 0.03 * lambda1_safe  # Relaxed from 0.05 to 0.03
     vertex_weights[too_linear] = 0
     
-    # Too isotropic: all eigenvalues very similar
-    too_isotropic = (ratio_21 > 0.9) & (ratio_32 > 0.9)
+    # Too isotropic: all eigenvalues very similar - relaxed
+    too_isotropic = (ratio_21 > 0.95) & (ratio_32 > 0.95)  # Relaxed from 0.9 to 0.95
     vertex_weights[too_isotropic] = 0
     
-    # Too planar: very small λ3
-    too_planar = lambda3_safe < 0.02 * lambda2_safe
+    # Too planar: very small λ3 - MUCH MORE PERMISSIVE for building corners
+    # Building corners are often primarily 2D, so allow very small λ3
+    too_planar = lambda3_safe < 0.005 * lambda2_safe  # Much more permissive: 0.5% instead of 2%
     vertex_weights[too_planar] = 0
     
     # Final enhancement with gentle power law

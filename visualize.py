@@ -9,6 +9,7 @@ from datasets.building3d import load_wireframe
 import yaml
 from easydict import EasyDict
 from utils.weight_assignment import compute_border_weights
+from utils.preprocess import Building3DPreprocessor, create_default_preprocessor
 
 def cfg_from_yaml_file(cfg_file):
     """Load configuration from YAML file"""
@@ -110,7 +111,7 @@ def visualize_with_coordinate_display(geometries, title, point_cloud=None):
         except:
             pass
 
-def visualize_point_cloud_matplotlib(point_cloud, title="Point Cloud", max_points=1000):
+def visualize_point_cloud_matplotlib(point_cloud, title="Point Cloud", max_points=1000, border_weights=None):
     """Visualize point cloud using matplotlib"""
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection='3d')
@@ -119,14 +120,24 @@ def visualize_point_cloud_matplotlib(point_cloud, title="Point Cloud", max_point
     if len(point_cloud) > max_points:
         indices = np.random.choice(len(point_cloud), max_points, replace=False)
         sampled_points = point_cloud[indices]
+        if border_weights is not None:
+            sampled_border_weights = border_weights[indices]
+        else:
+            sampled_border_weights = None
     else:
         sampled_points = point_cloud
+        sampled_border_weights = border_weights
     
     # Extract coordinates
     x, y, z = sampled_points[:, 0], sampled_points[:, 1], sampled_points[:, 2]
     
-    # Use colors if available
-    if sampled_points.shape[1] > 6:  # Has RGB
+    # Choose coloring scheme
+    if sampled_border_weights is not None:
+        # Color by border weights
+        scatter = ax.scatter(x, y, z, c=sampled_border_weights, cmap='hot', s=2, alpha=0.7)
+        plt.colorbar(scatter, ax=ax, label='Border Weights', shrink=0.6)
+        title += " (Border Weights)"
+    elif sampled_points.shape[1] > 6:  # Has RGB
         colors = sampled_points[:, 3:6]
         if colors.max() > 1.0:  # Normalize if needed
             colors = colors / 255.0
@@ -314,10 +325,14 @@ def color_points_by_group_instance(point_cloud):
         return None
 
 
-def color_points_by_border_weights(point_cloud):
+def color_points_by_border_weights(point_cloud, border_weights=None):
     """
     Color points based on their border weights (geometric border-ness).
     Highlights edges and corners that form object borders.
+    
+    Args:
+        point_cloud (np.ndarray): Point cloud data
+        border_weights (np.ndarray, optional): Pre-computed border weights. If None, will compute them.
     """
     try:
         import open3d as o3d
@@ -325,8 +340,14 @@ def color_points_by_border_weights(point_cloud):
         # Extract only XYZ coordinates for weight calculation
         points_xyz = point_cloud[:, :3]
         
-        # Compute border weights
-        border_weights = compute_border_weights(points_xyz, k_neighbors=25, normalize_weights=True)
+        # Use provided border weights or compute them
+        if border_weights is None:
+            border_weights = compute_border_weights(points_xyz, k_neighbors=25, normalize_weights=True)
+        else:
+            # Ensure border_weights is the right length
+            if len(border_weights) != len(points_xyz):
+                print(f"Warning: border_weights length {len(border_weights)} doesn't match points {len(points_xyz)}")
+                border_weights = compute_border_weights(points_xyz, k_neighbors=25, normalize_weights=True)
         
         # Create color map: blue (low border weight) to red (high border weight)
         colors = np.zeros((len(point_cloud), 3))
@@ -359,7 +380,7 @@ def color_points_by_border_weights(point_cloud):
 
 
 
-def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordinate_frame=True, show_boundaries=False, show_normals=False, color_by_normal_quality=False, color_by_surface_type=False, color_by_group_instance=False, color_by_border_weights=False, coordinate_frame_size=0.1):
+def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordinate_frame=True, show_boundaries=False, show_normals=False, color_by_normal_quality=False, color_by_surface_type=False, color_by_group_instance=False, color_by_border_weights=False, coordinate_frame_size=0.1, border_weights=None):
     """Visualize point cloud using Open3D with simple axis lines, optional boundaries, and explicit normal lines"""
     try:
         import open3d as o3d
@@ -371,7 +392,7 @@ def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordina
         # Choose coloring scheme (priority order)
         if color_by_border_weights:
             # Border weight colors (highest priority for weight analysis)
-            border_colors = color_points_by_border_weights(point_cloud)
+            border_colors = color_points_by_border_weights(point_cloud, border_weights)
             if border_colors is not None:
                 pcd.colors = o3d.utility.Vector3dVector(border_colors)
             else:
@@ -642,7 +663,7 @@ def visualize_combined_matplotlib(point_cloud, vertices, edges, title="Combined 
     plt.tight_layout()
     return fig
 
-def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View", show_coordinate_frame=True, show_boundaries=False, show_normals=False, color_by_normal_quality=False, color_by_surface_type=False, color_by_group_instance=False, color_by_border_weights=False, coordinate_frame_size=0.1):
+def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View", show_coordinate_frame=True, show_boundaries=False, show_normals=False, color_by_normal_quality=False, color_by_surface_type=False, color_by_group_instance=False, color_by_border_weights=False, coordinate_frame_size=0.1, border_weights=None):
     """Visualize point cloud and wireframe together using Open3D with coordinate frame, boundaries, and optional normals"""
     try:
         import open3d as o3d
@@ -654,7 +675,7 @@ def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View
         # Choose coloring scheme for point cloud (priority order)
         if color_by_border_weights:
             # Border weight colors (highest priority for weight analysis)
-            border_colors = color_points_by_border_weights(point_cloud)
+            border_colors = color_points_by_border_weights(point_cloud, border_weights)
             if border_colors is not None:
                 pcd.colors = o3d.utility.Vector3dVector(border_colors)
             else:
@@ -939,6 +960,24 @@ def main():
     print(f"  Vertices shape: {vertices.shape}")
     print(f"  Edges shape: {edges.shape}")
     
+
+    # Using dataset preprocessing - extract border weights if available
+    border_weights = None
+    if point_cloud.shape[1] > 3:  # Check if border weights are already computed
+        # Assume last column contains border weights (from dataset preprocessing)
+        potential_weights = point_cloud[:, -1]
+        if np.all((potential_weights >= 0) & (potential_weights <= 1)):
+            border_weights = potential_weights
+            print(f"\nFound pre-computed border weights in dataset:")
+            print(f"  Border weights range: [{border_weights.min():.4f}, {border_weights.max():.4f}]")
+            print(f"  Border weights mean: {border_weights.mean():.4f}")
+        
+    if border_weights is None:
+        # Compute border weights for visualization
+        print("\nComputing border weights for visualization...")
+        border_weights = compute_border_weights(point_cloud[:, :3], k_neighbors=15)
+        print(f"  Border weights computed: range [{border_weights.min():.4f}, {border_weights.max():.4f}]")
+    
     # Select visualization type
     viz_type = select_visualization_type()
     
@@ -955,7 +994,7 @@ def main():
     
     if backend == "matplotlib":
         if viz_type == 1:  # Point cloud only
-            fig, ax = visualize_point_cloud_matplotlib(point_cloud, f"Point Cloud - {sample_name}")
+            fig, ax = visualize_point_cloud_matplotlib(point_cloud, f"Point Cloud - {sample_name}", border_weights=border_weights)
             plt.show()
         elif viz_type == 2:  # Wireframe only
             fig, ax = visualize_wireframe_matplotlib(vertices, edges, f"Wireframe - {sample_name}")
@@ -974,7 +1013,7 @@ def main():
         if viz_type == 1:  # Point cloud only
             visualize_point_cloud_open3d(
                 point_cloud, f"Point Cloud - {sample_name}", 
-                show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights, coord_size
+                show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights, coord_size, border_weights
             )
         elif viz_type == 2:  # Wireframe only
             visualize_wireframe_open3d(
@@ -984,7 +1023,7 @@ def main():
         else:  # Combined
             visualize_combined_open3d(
                 point_cloud, vertices, edges, f"Combined View - {sample_name}",
-                show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights, coord_size
+                show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights, coord_size, border_weights
             )
     
     print("\nVisualization complete!")

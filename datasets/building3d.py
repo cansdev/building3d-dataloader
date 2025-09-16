@@ -15,6 +15,7 @@ from torch.utils.data import Dataset
 from collections import defaultdict
 from utils.normalization import normalize_data
 from utils.surface_grouping import surface_aware_normalization_pipeline
+from utils.preprocess import Building3DPreprocessor, create_default_preprocessor
 
 def load_wireframe(wireframe_file):
     vertices = []
@@ -81,8 +82,19 @@ class Building3DReconstructionDataset(Dataset):
         self.use_intensity = dataset_config.use_intensity
         self.normalize = dataset_config.normalize
         self.augment = dataset_config.augment
-        self.use_surface_grouping = getattr(dataset_config, 'use_surface_grouping', False)
+        self.use_surface_grouping = getattr(dataset_config, 'use_surface_grouping', True)  # Default to True (advanced)
         self.use_outlier_removal = getattr(dataset_config, 'use_outlier_removal', True)
+        
+        # Initialize preprocessor using YAML configuration
+        self.preprocessor = create_default_preprocessor()
+        
+        # Override specific settings from dataset config if needed
+        if hasattr(dataset_config, 'use_outlier_removal'):
+            self.preprocessor.config['use_outlier_removal'] = dataset_config.use_outlier_removal
+        if hasattr(dataset_config, 'normalize'):
+            self.preprocessor.config['normalize'] = dataset_config.normalize
+        if hasattr(dataset_config, 'use_surface_grouping'):
+            self.preprocessor.config['use_surface_grouping'] = dataset_config.use_surface_grouping
 
         assert split_set in ["train", "test"]
         self.split_set = split_set
@@ -123,127 +135,16 @@ class Building3DReconstructionDataset(Dataset):
 
         # ------------------------------- Dataset Preprocessing ------------------------------
         if self.normalize:
-            if self.use_surface_grouping:
-                # Use advanced surface-aware processing pipeline
-                print(f"Using surface-aware processing for sample {index}")
-                
-                # Configure pipeline parameters (more conservative outlier removal)
-                outlier_params = {
-                    'remove_statistical': self.use_outlier_removal,
-                    'remove_radius': self.use_outlier_removal,
-                    'remove_elevation': self.use_outlier_removal,
-                    'stat_k': 15,
-                    'stat_std_ratio': 3.0,  # More conservative (was 2.0)
-                    'radius_threshold': 0.04,
-                    'radius_min_neighbors': 2,  # More lenient (was 3)
-                    'elev_std_ratio': 3.0,  # More conservative (was 2.0)
-                    'auto_scale_radii': True
-                }
-                
-                grouping_params = {
-                    'coarse_params': {
-                        'eps': 0.05,  # Simple spatial clustering parameter
-                        'min_samples': 5,
-                        'auto_scale_eps': True
-                    },
-                    'refinement_params': {
-                        'merge_distance': 0.05,
-                        'min_group_size': 15  # Minimum 15 points per cluster
-                    }
-                }
-                
-                processing_params = {
-                    'apply_outlier_removal': self.use_outlier_removal,
-                    'compute_normals': True,
-                    'use_neighbor_cache': True
-                }
-                
-                # Run surface-aware pipeline
-                surface_results = surface_aware_normalization_pipeline(
-                    point_cloud[:, 0:3],  # Only XYZ coordinates for grouping
-                    outlier_removal_params=outlier_params,
-                    grouping_params=grouping_params,
-                    processing_params=processing_params
-                )
-                
-                if surface_results is not None:
-                    # Integrate results back into point cloud
-                    cleaned_points = surface_results['cleaned_points']
-                    normals = surface_results['normals']
-                    group_ids = surface_results.get('group_ids', None)
-                    
-                    # Normalize coordinates to unit scale
-                    centroid = np.mean(cleaned_points, axis=0)
-                    centered_points = cleaned_points - centroid
-                    max_distance = np.max(np.linalg.norm(centered_points, axis=1))
-                    
-                    if max_distance > 1e-6:
-                        normalized_coords = centered_points / max_distance
-                    else:
-                        normalized_coords = centered_points
-                    
-                    # Apply same transformation to wireframe
-                    wf_vertices = (wf_vertices - centroid) / max_distance
-                    
-                    # Reconstruct full point cloud with surface information
-                    n_cleaned = len(cleaned_points)
-                    
-                    if point_cloud.shape[1] >= 8:
-                        # Preserve original features for cleaned points
-                        feature_dim = point_cloud.shape[1]
-                        reconstructed_pc = np.zeros((n_cleaned, feature_dim + 4))  # +3 for normals, +1 for group id
-                        
-                        # Use cleaned coordinates  
-                        reconstructed_pc[:, 0:3] = normalized_coords
-                        
-                        # For features, use nearest neighbor mapping from original to cleaned points
-                        if n_cleaned > 0:
-                            from sklearn.neighbors import NearestNeighbors
-                            original_coords = point_cloud[:, 0:3]
-                            nbrs = NearestNeighbors(n_neighbors=1).fit(original_coords)
-                            _, nearest_indices = nbrs.kneighbors(cleaned_points)
-                            nearest_indices = nearest_indices.flatten()
-                            
-                            # Copy features from nearest original points
-                            reconstructed_pc[:, 3:feature_dim] = point_cloud[nearest_indices, 3:]
-                        
-                        # Add normals and group ids
-                        if normals is not None:
-                            reconstructed_pc[:, feature_dim:feature_dim+3] = normals
-                        if group_ids is not None:
-                            reconstructed_pc[:, feature_dim+3] = group_ids
-                        
-                        point_cloud = reconstructed_pc
-                    else:
-                        # Simple case: just coordinates + normals + group ids
-                        point_cloud = np.column_stack([
-                            normalized_coords,
-                            normals if normals is not None else np.zeros((n_cleaned, 3)),
-                            group_ids if group_ids is not None else np.zeros(n_cleaned)
-                        ])
-                else:
-                    print("Surface-aware processing failed, falling back to standard normalization")
-                    # Fallback to standard normalization
-                    point_cloud, wf_vertices, centroid, max_distance, normals = normalize_data(
-                        point_cloud, wf_vertices, compute_normals=True, k_neighbors=10,
-                        clean_outliers=self.use_outlier_removal
-                    )
-            else:
-                # Standard normalization pipeline
-                # Custom outlier removal parameters for better normal quality
-                outlier_params = {
-                    'stat_k': 15,
-                    'stat_std_ratio': 1.5,  # More aggressive statistical outlier removal
-                    'radius_threshold': 0.03,  # Smaller radius for tighter clustering
-                    'radius_min_neighbors': 3,  # Require more neighbors for validity
-                    'elev_std_ratio': 2.0,  # More aggressive elevation filtering
-                    'elev_percentiles': (10, 90)  # Tighter percentile range for robust stats
-                }
-                
-                point_cloud, wf_vertices, centroid, max_distance, normals = normalize_data(
-                    point_cloud, wf_vertices, compute_normals=True, k_neighbors=10,
-                    clean_outliers=self.use_outlier_removal, outlier_params=outlier_params
-                )
+            # Use unified preprocessing pipeline
+            result = self.preprocessor.process_point_cloud(
+                point_cloud=point_cloud,
+                wireframe_vertices=wf_vertices
+            )
+            
+            point_cloud = result['processed_points']
+            wf_vertices = result['processed_wireframe'] 
+            centroid = result['metadata']['centroid']
+            max_distance = result['metadata']['max_distance']
 
         if self.num_points:
             point_cloud = random_sampling(point_cloud, self.num_points)
