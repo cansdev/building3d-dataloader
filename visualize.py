@@ -204,10 +204,10 @@ def color_points_by_normal_quality(point_cloud):
     try:
         import open3d as o3d
         
-        if point_cloud.shape[1] < 11:
+        if point_cloud.shape[1] < 6:
             return None  # No normals available
             
-        normals = point_cloud[:, 8:11]
+        normals = point_cloud[:, 3:6]  # Normals are in columns 3-5, not 8-11!
         z_component = normals[:, 2]
         
         # Create color map based on normal Z component
@@ -269,11 +269,11 @@ def color_points_by_group_instance(point_cloud):
     try:
         import open3d as o3d
         
-        if point_cloud.shape[1] < 12:
+        if point_cloud.shape[1] < 7:
             # No group IDs, fallback to normal coloring
             return color_points_by_normal_quality(point_cloud)
             
-        group_ids = point_cloud[:, -1].astype(int)
+        group_ids = point_cloud[:, 6].astype(int)
         unique_groups = np.unique(group_ids)
         n_groups = len(unique_groups)
         
@@ -432,9 +432,9 @@ def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordina
         geometries = [pcd]
         
         # Add explicit normal visualization if available and requested
-        has_normals = point_cloud.shape[1] >= 11
+        has_normals = point_cloud.shape[1] >= 6  # Need at least 6 columns for XYZ + normals
         if has_normals and show_normals:
-            normals = point_cloud[:, 8:11]
+            normals = point_cloud[:, 3:6]  # Normals are in columns 3-5, not 8-11!
             points = point_cloud[:, :3]
             
             # Set point cloud normals for Open3D
@@ -735,9 +735,9 @@ def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View
         geometries = [pcd, line_set, vertex_pcd]
         
         # Add explicit normal visualization if available and requested
-        has_normals = point_cloud.shape[1] >= 11
+        has_normals = point_cloud.shape[1] >= 6  # Need at least 6 columns for XYZ + normals
         if has_normals and show_normals:
-            normals = point_cloud[:, 8:11]
+            normals = point_cloud[:, 3:6]  # Normals are in columns 3-5, not 8-11!
             points = point_cloud[:, :3]
             
             # Set point cloud normals for Open3D
