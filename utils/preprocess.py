@@ -34,7 +34,6 @@ class Building3DPreprocessor:
             'normalize': True,
             'use_outlier_removal': True,
             'use_surface_grouping': False,
-            'compute_normals': True,
             'compute_border_weights': True,
             'outlier_params': {
                 'stat_k': 15,
@@ -59,7 +58,7 @@ class Building3DPreprocessor:
                 'k_neighbors': 25,
                 'normalize_weights': True,
                 'multi_scale': False,
-                'use_normal_analysis': True
+                'use_normal_analysis': False  # Disabled since normals are removed
             }
         }
         
@@ -141,7 +140,7 @@ class Building3DPreprocessor:
         
         processing_params = {
             'apply_outlier_removal': self.config['use_outlier_removal'],
-            'compute_normals': self.config['compute_normals'],
+            'compute_normals': False,  # Disabled - normals removed from pipeline
             'use_neighbor_cache': True
         }
         
@@ -156,7 +155,6 @@ class Building3DPreprocessor:
         if surface_results is not None:
             # Integrate results back into point cloud
             cleaned_points = surface_results['cleaned_points']
-            normals = surface_results['normals']
             group_ids = surface_results.get('group_ids', None)
             
             # Normalize coordinates to unit scale
@@ -174,14 +172,12 @@ class Building3DPreprocessor:
                 wireframe_vertices = (wireframe_vertices - centroid) / max_distance
                 results['processed_wireframe'] = wireframe_vertices
             
-            # Reconstruct full point cloud with surface information
+            # Reconstruct full point cloud with surface information (no normals)
             n_cleaned = len(cleaned_points)
             
             if point_cloud.shape[1] >= 3:
                 # Determine output dimensions
                 output_dims = 3  # XYZ
-                if normals is not None:
-                    output_dims += 3  # +3 for normals
                 if group_ids is not None:
                     output_dims += 1  # +1 for group ID
                 if point_cloud.shape[1] > 3:
@@ -192,11 +188,6 @@ class Building3DPreprocessor:
                 # Set coordinates
                 reconstructed_pc[:, 0:3] = normalized_coords
                 col_idx = 3
-                
-                # Add normals if computed
-                if normals is not None:
-                    reconstructed_pc[:, col_idx:col_idx+3] = normals
-                    col_idx += 3
                 
                 # Add group IDs if available
                 if group_ids is not None:
@@ -215,10 +206,8 @@ class Building3DPreprocessor:
                 
                 results['processed_points'] = reconstructed_pc
             else:
-                # Simple case: just coordinates + normals + group ids
+                # Simple case: just coordinates + group ids
                 components = [normalized_coords]
-                if normals is not None:
-                    components.append(normals)
                 if group_ids is not None:
                     components.append(group_ids.reshape(-1, 1))
                 
@@ -227,14 +216,14 @@ class Building3DPreprocessor:
             # Store metadata
             results['metadata']['centroid'] = centroid
             results['metadata']['max_distance'] = max_distance
-            results['metadata']['has_normals'] = normals is not None
+            results['metadata']['has_normals'] = False  # Normals removed from pipeline
             results['metadata']['has_group_ids'] = group_ids is not None
             results['metadata']['processing_steps'].append('surface_aware_normalization')
             
             if verbose:
                 print(f"Surface-aware processing successful")
                 print(f"Points: {len(point_cloud)} -> {n_cleaned}")
-                print(f"Features: normals={normals is not None}, groups={group_ids is not None}")
+                print(f"Features: groups={group_ids is not None}")
         
         else:
             if verbose:
@@ -252,11 +241,9 @@ class Building3DPreprocessor:
             print("Using standard normalization pipeline")
         
         # Apply normalization with outlier removal
-        processed_pc, processed_wf, centroid, max_distance, normals = normalize_data(
+        processed_pc, processed_wf, centroid, max_distance = normalize_data(
             point_cloud, 
             wireframe_vertices, 
-            compute_normals=self.config['compute_normals'], 
-            k_neighbors=self.config['weight_params']['k_neighbors'],
             clean_outliers=self.config['use_outlier_removal'],
             outlier_params=self.config['outlier_params']
         )
@@ -265,13 +252,12 @@ class Building3DPreprocessor:
         results['processed_wireframe'] = processed_wf
         results['metadata']['centroid'] = centroid
         results['metadata']['max_distance'] = max_distance
-        results['metadata']['has_normals'] = normals is not None
+        results['metadata']['has_normals'] = False  # Normals removed from pipeline
         results['metadata']['processing_steps'].append('standard_normalization')
         
         if verbose:
             print(f"Standard normalization complete")
             print(f"Points: {len(point_cloud)} -> {len(processed_pc)}")
-            print(f"Has normals: {normals is not None}")
         
         return results
     
@@ -279,23 +265,16 @@ class Building3DPreprocessor:
         """Compute border weights for the processed point cloud."""
         point_cloud = results['processed_points']
         
-        # Extract coordinates and normals if available
+        # Extract coordinates only (no normals available)
         coordinates = point_cloud[:, 0:3]
-        normals = None
         
-        # Check if normals are available in the point cloud
-        if point_cloud.shape[1] >= 6 and results['metadata'].get('has_normals', False):
-            normals = point_cloud[:, 3:6]  # Assume normals are in columns 3-5
-        
-        # Compute border weights
+        # Compute border weights without normal analysis
         weight_params = self.config['weight_params']
         border_weights = compute_border_weights(
             coordinates,
             k_neighbors=weight_params['k_neighbors'],
             normalize_weights=weight_params['normalize_weights'],
-            multi_scale=weight_params['multi_scale'],
-            normals=normals,
-            use_normal_analysis=weight_params['use_normal_analysis']
+            multi_scale=weight_params['multi_scale']
         )
         
         # Add border weights to the point cloud
@@ -348,98 +327,10 @@ def create_default_preprocessor(config_file=None):
         # Default path relative to the utils directory
         config_file = os.path.join(os.path.dirname(__file__), '..', 'datasets', 'dataset_config.yaml')
     
-    try:
-        with open(config_file, 'r') as f:
-            yaml_config = yaml.safe_load(f)
+    with open(config_file, 'r') as f:
+        yaml_config = yaml.safe_load(f)
         
-        # Extract preprocessor config from Building3D section
-        preprocessor_config = yaml_config['Building3D']['preprocessor']
+    # Extract preprocessor config from Building3D section
+    preprocessor_config = yaml_config['Building3D']['preprocessor']
         
-        return Building3DPreprocessor(preprocessor_config)
-    
-    except (FileNotFoundError, KeyError, yaml.YAMLError) as e:
-        print(f"Warning: Could not load config from {config_file}: {e}")
-        print("Using fallback default configuration")
-        
-        # Fallback configuration (previously the advanced one)
-        config = {
-            'normalize': True,
-            'use_outlier_removal': True,
-            'use_surface_grouping': True,  # Enable advanced processing
-            'compute_normals': True,
-            'compute_border_weights': True,
-            'outlier_params': {
-                'stat_k': 15,
-                'stat_std_ratio': 3.0,  # More conservative
-                'radius_threshold': 0.04,
-                'radius_min_neighbors': 2,  # More lenient
-                'elev_std_ratio': 3.0,  # More conservative
-                'auto_scale_radii': True
-            },
-            'grouping_params': {
-                'coarse_params': {
-                    'eps': 0.05,
-                    'min_samples': 5,
-                    'auto_scale_eps': True
-                },
-                'refinement_params': {
-                    'merge_distance': 0.05,
-                    'min_group_size': 15
-                }
-            },
-            'weight_params': {
-                'k_neighbors': 25,
-                'normalize_weights': True,
-                'multi_scale': True,  # Enable multi-scale analysis
-                'use_normal_analysis': True
-            }
-        }
-        return Building3DPreprocessor(config)
-
-
-# Maintain backward compatibility 
-create_advanced_preprocessor = create_default_preprocessor
-
-
-def process_point_cloud_simple(point_cloud, wireframe_vertices=None, compute_border_weights=True):
-    """
-    Simple function to process a point cloud with default settings.
-    
-    Args:
-        point_cloud (np.ndarray): Input point cloud
-        wireframe_vertices (np.ndarray, optional): Wireframe vertices
-        compute_border_weights (bool): Whether to compute border weights
-        
-    Returns:
-        dict: Processing results
-    """
-    config = {
-        'normalize': True,
-        'use_outlier_removal': True,
-        'use_surface_grouping': False,
-        'compute_normals': True,
-        'compute_border_weights': compute_border_weights
-    }
-    
-    preprocessor = Building3DPreprocessor(config)
-    return preprocessor.process_point_cloud(point_cloud, wireframe_vertices, verbose=False)
-
-
-# Example usage and testing
-if __name__ == "__main__":
-    # Example of how to use the preprocessor
-    print("Building3D Preprocessing Pipeline Example")
-    
-    # Create synthetic test data
-    np.random.seed(42)
-    test_points = np.random.rand(1000, 3) * 10  # 1000 random 3D points
-    test_wireframe = np.random.rand(8, 3) * 10   # 8 wireframe vertices
-    
-    # Create and use default preprocessor
-    preprocessor = create_default_preprocessor()
-    results = preprocessor.process_point_cloud(test_points, test_wireframe)
-    
-    print(f"\nProcessing results:")
-    print(f"Original shape: {test_points.shape}")
-    print(f"Processed shape: {results['processed_points'].shape}")
-    print(f"Has border weights: {results['metadata'].get('has_border_weights', False)}")
+    return Building3DPreprocessor(preprocessor_config)

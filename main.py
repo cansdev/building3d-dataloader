@@ -58,7 +58,7 @@ def load_training_data():
 
 def main():
     """Main function to load training data"""
-    print("Building3D Dataloader - Training Data Preparation")
+    print("Training Data Preparation")
     
     try:
         # Load training data
@@ -67,11 +67,6 @@ def main():
         print("\n" + "=" * 60)
         print("READY FOR TRAINING!")
         print("=" * 60)
-        print("Your training file can now use this DataLoader:")
-        print("from main import load_training_data")
-        print("train_loader = load_training_data()")
-        print("=" * 60)
-        
         return train_loader
         
     except Exception as e:

@@ -11,7 +11,7 @@ from sklearn.neighbors import NearestNeighbors
 from scipy.spatial.distance import pdist, squareform
 from collections import defaultdict
 from .outlier_removal import remove_statistical_outliers, remove_radius_outliers, NeighborCache
-from .normalization import estimate_normals_robust
+# Normal estimation removed from pipeline
 
 
 class SurfaceGroup:
@@ -23,35 +23,8 @@ class SurfaceGroup:
         self.indices = indices  # Original indices in the full point cloud
         self.surface_type = surface_type  # 'floor', 'wall', 'roof', 'edge'
         self.confidence = confidence
-        self.normal = None
         self.center = np.mean(points, axis=0) if len(points) > 0 else np.zeros(3)
         self.size = len(points)
-        
-    def compute_dominant_normal(self):
-        """Compute the dominant normal for this surface group using PCA."""
-        if len(self.points) < 3:
-            self.normal = np.array([0, 0, 1])  # Default upward
-            return self.normal
-            
-        # Center the points
-        centered = self.points - self.center
-        
-        # Compute covariance matrix
-        cov_matrix = np.cov(centered.T)
-        
-        # Find eigenvector with smallest eigenvalue (normal direction)
-        eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
-        normal = eigenvectors[:, 0]  # Smallest eigenvalue
-        
-        # Orient normal consistently (upward preference for floors/roofs)
-        if self.surface_type in ['floor', 'roof'] and normal[2] < 0:
-            normal = -normal
-        elif self.surface_type == 'wall' and abs(normal[2]) > 0.7:
-            # For walls, prefer more horizontal normals
-            normal = eigenvectors[:, 1] if abs(eigenvectors[1, 2]) < abs(normal[2]) else normal
-            
-        self.normal = normal / (np.linalg.norm(normal) + 1e-8)
-        return self.normal
         
     def get_planarity_score(self):
         """Compute planarity score (0=linear, 1=planar)."""
@@ -930,24 +903,10 @@ def process_surface_group(surface_group, apply_outlier_removal=True, compute_nor
     quality_scores = None
     
     if compute_normals and len(current_points) >= 3:
-        normal_params = params['normal_computation']
-        
-        try:
-            normals, quality_scores = estimate_normals_robust(
-                current_points,
-                base_k_neighbors=normal_params['base_k_neighbors'],
-                curvature_threshold=normal_params['curvature_threshold'],
-                smooth_iterations=normal_params['smooth_iterations'],
-                smooth_radius=normal_params['smooth_radius'],
-                adaptive_k=normal_params['adaptive_k']
-            )
-            
-            print(f"  Computed {len(normals)} high-quality normals")
-            
-        except Exception as e:
-            print(f"  Normal computation failed: {e}")
-            normals = None
-            quality_scores = None
+        # Normal computation disabled - normals removed from pipeline
+        print("  Normal computation disabled (normals removed from pipeline)")
+        normals = None
+        quality_scores = None
     
     return current_points, current_indices, normals, quality_scores
 
@@ -983,7 +942,6 @@ def process_all_surface_groups(surface_groups, apply_outlier_removal=True, compu
     
     all_cleaned_points = []
     all_cleaned_indices = []
-    all_normals = []
     all_quality_scores = []
     all_group_ids = []
     group_info = []
@@ -1020,33 +978,25 @@ def process_all_surface_groups(surface_groups, apply_outlier_removal=True, compu
             group_ids = np.full(n_cleaned, i, dtype=np.int32)
             all_group_ids.append(group_ids)
             
-            # Normals and quality scores
-            if normals is not None:
-                all_normals.append(normals)
-                all_quality_scores.append(quality_scores)
-            else:
-                # Create default normals if computation failed
-                default_normals = np.tile(group.normal, (n_cleaned, 1)) if group.normal is not None else np.zeros((n_cleaned, 3))
-                default_quality = np.full(n_cleaned, 0.5)
-                all_normals.append(default_normals)
-                all_quality_scores.append(default_quality)    # Combine all results
+            # Quality scores (default since normals removed)
+            default_quality = np.full(n_cleaned, 0.5)
+            all_quality_scores.append(default_quality)
+            
+    # Combine all results
     if all_cleaned_points:
         combined_points = np.vstack(all_cleaned_points)
         combined_indices = np.concatenate(all_cleaned_indices)
-        combined_normals = np.vstack(all_normals) if all_normals else None
         combined_quality = np.concatenate(all_quality_scores) if all_quality_scores else None
         combined_group_ids = np.concatenate(all_group_ids) if all_group_ids else None
     else:
         combined_points = np.zeros((0, 3))
         combined_indices = np.array([], dtype=np.int32)
-        combined_normals = None
         combined_quality = None
         combined_group_ids = None
 
     results = {
         'cleaned_points': combined_points,
         'cleaned_indices': combined_indices,
-        'normals': combined_normals,
         'quality_scores': combined_quality,
         'group_ids': combined_group_ids,
         'group_info': group_info
@@ -1054,8 +1004,6 @@ def process_all_surface_groups(surface_groups, apply_outlier_removal=True, compu
     
     print(f"\n=== Processing Summary ===")
     print(f"Total cleaned points: {len(combined_points)}")
-    if combined_normals is not None:
-        print(f"Computed normals: {len(combined_normals)}")
     
     # Summary by groups
     total_groups = len(group_info)
@@ -1118,7 +1066,6 @@ def surface_aware_normalization_pipeline(points, outlier_removal_params=None,
     final_results = {
         'original_points': points,
         'cleaned_points': processing_results['cleaned_points'],
-        'normals': processing_results['normals'],
         'quality_scores': processing_results['quality_scores'],
         'group_ids': processing_results['group_ids'],
         'surface_groups': surface_groups,
@@ -1128,22 +1075,6 @@ def surface_aware_normalization_pipeline(points, outlier_removal_params=None,
     }
     
     return final_results
-    
-    # Step 4: Combine results
-    final_results = {
-        'original_points': points,
-        'cleaned_points': processing_results['cleaned_points'],
-        'normals': processing_results['normals'],
-        'quality_scores': processing_results['quality_scores'],
-        'group_ids': processing_results['group_ids'],
-        'surface_groups': surface_groups,
-        'group_info': processing_results['group_info'],
-        'outlier_mask': outlier_mask,
-        'processing_summary': get_processing_summary(points, processing_results, surface_groups)
-    }
-    
-    return final_results
-
 
 def get_processing_summary(original_points, processing_results, surface_groups):
     """
@@ -1170,7 +1101,6 @@ def get_processing_summary(original_points, processing_results, surface_groups):
         'overall_retention_rate': retention_rate,
         'total_surface_groups': len(surface_groups),
         'group_statistics': group_stats,
-        'has_normals': processing_results['normals'] is not None,
         'has_quality_scores': processing_results['quality_scores'] is not None
     }
     

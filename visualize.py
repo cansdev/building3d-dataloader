@@ -152,110 +152,57 @@ def visualize_point_cloud_matplotlib(point_cloud, title="Point Cloud", max_point
     
     return fig, ax
 
-def create_normal_lines(points, normals, normal_length=0.05, surface_labels=None):
-    """Create line segments to visualize surface normals with optional surface-type coloring"""
-    try:
-        import open3d as o3d
-        
-        # Create line endpoints
-        start_points = points
-        end_points = points + normals * normal_length
-        
-        # Combine all points
-        all_points = np.vstack([start_points, end_points])
-        
-        # Create line indices (each normal is one line)
-        n_points = len(points)
-        lines = np.array([[i, i + n_points] for i in range(n_points)])
-        
-        # Create line set
-        line_set = o3d.geometry.LineSet()
-        line_set.points = o3d.utility.Vector3dVector(all_points)
-        line_set.lines = o3d.utility.Vector2iVector(lines)
-        
-        # Color normal lines based on surface type if available
-        if surface_labels is not None:
-            surface_normal_colors = {
-                0: [1.0, 0.6, 0.3],  # Floor normals: Orange
-                1: [0.3, 1.0, 0.3],  # Wall normals: Bright green
-                2: [0.3, 0.3, 1.0],  # Roof normals: Bright blue
-                3: [1.0, 1.0, 0.3],  # Edge normals: Bright yellow
-                4: [0.7, 0.7, 0.7]   # Unknown normals: Light gray
-            }
-            colors = []
-            for label in surface_labels:
-                color = surface_normal_colors.get(int(label), [0.0, 1.0, 1.0])  # Default cyan
-                colors.append(color)
-        else:
-            # Default cyan for all normals
-            colors = [[0.0, 1.0, 1.0] for _ in range(len(lines))]  # Cyan
-        
-        line_set.colors = o3d.utility.Vector3dVector(colors)
-        
-        return line_set
-    except ImportError:
-        return None
-
-def color_points_by_normal_quality(point_cloud):
-    """
-    Color points based on their normal orientation quality.
-    Green = upward normals (good), Yellow = side normals (ok), Red = downward normals (suspicious)
-    """
-    try:
-        import open3d as o3d
-        
-        if point_cloud.shape[1] < 6:
-            return None  # No normals available
-            
-        normals = point_cloud[:, 3:6]  # Normals are in columns 3-5, not 8-11!
-        z_component = normals[:, 2]
-        
-        # Create color map based on normal Z component
-        colors = np.zeros((len(point_cloud), 3))
-        
-        # Upward normals (z > 0.5) -> Green
-        upward_mask = z_component > 0.5
-        colors[upward_mask] = [0.0, 1.0, 0.0]  # Green
-        
-        # Side/oblique normals (-0.3 <= z <= 0.5) -> Yellow/Orange
-        side_mask = (z_component >= -0.3) & (z_component <= 0.5)
-        # Interpolate from yellow to orange based on angle
-        side_ratio = (z_component[side_mask] + 0.3) / 0.8  # Normalize to [0,1]
-        colors[side_mask, 0] = 1.0  # Red component
-        colors[side_mask, 1] = 0.5 + 0.5 * side_ratio  # Green component (0.5 to 1.0)
-        colors[side_mask, 2] = 0.0  # Blue component
-        
-        # Downward normals (z < -0.3) -> Red (suspicious outliers)
-        downward_mask = z_component < -0.3
-        colors[downward_mask] = [1.0, 0.0, 0.0]  # Red
-        
-        # Print statistics
-        n_up = np.sum(upward_mask)
-        n_side = np.sum(side_mask)
-        n_down = np.sum(downward_mask)
-        total = len(point_cloud)
-        
-        print(f"\n=== Normal Quality Analysis ===")
-        print(f"🟢 Upward normals (z > 0.5): {n_up} ({100*n_up/total:.1f}%) - Good quality")
-        print(f"🟡 Side normals (-0.3 ≤ z ≤ 0.5): {n_side} ({100*n_side/total:.1f}%) - Acceptable")
-        print(f"🔴 Downward normals (z < -0.3): {n_down} ({100*n_down/total:.1f}%) - Check for outliers")
-        
-        return colors
-        
-    except ImportError:
-        return None
-
-
 def color_points_by_surface_type(point_cloud):
     """
     Color points based on their surface type labels (if available).
-    Falls back to normal quality coloring if no surface labels.
+    Falls back to elevation-based coloring if no surface labels.
     """
     try:
         import open3d as o3d
         
-        # Since we removed surface type classification, fallback to normal-based coloring
-        return color_points_by_normal_quality(point_cloud)
+        # Since we removed surface type classification, fallback to height-based coloring
+        return color_points_by_elevation(point_cloud)
+        
+    except ImportError:
+        return None
+
+
+def color_points_by_elevation(point_cloud):
+    """
+    Color points based on their elevation (Z coordinate).
+    Blue = low, Green = medium, Red = high
+    """
+    try:
+        import open3d as o3d
+        
+        # Extract Z coordinates
+        z_coords = point_cloud[:, 2]
+        z_min, z_max = np.min(z_coords), np.max(z_coords)
+        
+        # Normalize to [0, 1] range
+        if z_max > z_min:
+            z_normalized = (z_coords - z_min) / (z_max - z_min)
+        else:
+            z_normalized = np.ones_like(z_coords) * 0.5
+        
+        # Create color map: Blue (low) -> Green (medium) -> Red (high)
+        colors = np.zeros((len(point_cloud), 3))
+        
+        # Blue to green for lower half
+        lower_mask = z_normalized <= 0.5
+        t_lower = z_normalized[lower_mask] * 2  # Scale to [0, 1]
+        colors[lower_mask, 0] = 0.0  # Red
+        colors[lower_mask, 1] = t_lower  # Green increases
+        colors[lower_mask, 2] = 1.0 - t_lower  # Blue decreases
+        
+        # Green to red for upper half
+        upper_mask = z_normalized > 0.5
+        t_upper = (z_normalized[upper_mask] - 0.5) * 2  # Scale to [0, 1]
+        colors[upper_mask, 0] = t_upper  # Red increases
+        colors[upper_mask, 1] = 1.0 - t_upper  # Green decreases
+        colors[upper_mask, 2] = 0.0  # Blue
+        
+        return colors
         
     except ImportError:
         return None
@@ -269,16 +216,17 @@ def color_points_by_group_instance(point_cloud):
     try:
         import open3d as o3d
         
-        if point_cloud.shape[1] < 7:
-            # No group IDs, fallback to normal coloring
-            return color_points_by_normal_quality(point_cloud)
-            
-        group_ids = point_cloud[:, 6].astype(int)
+        if point_cloud.shape[1] < 4:  # Adjusted for new structure: XYZ + group_id
+            # No group IDs, fallback to elevation coloring
+            return color_points_by_elevation(point_cloud)
+        
+        # Group IDs are now in column 3 instead of 6 (since we removed normals)
+        group_ids = point_cloud[:, 3].astype(int)
         unique_groups = np.unique(group_ids)
         n_groups = len(unique_groups)
         
         if n_groups == 0:
-            return color_points_by_normal_quality(point_cloud)
+            return color_points_by_elevation(point_cloud)
         
         # Generate distinct colors using HSV color space for better separation
         colors = np.zeros((len(point_cloud), 3))
@@ -353,8 +301,8 @@ def color_points_by_border_weights(point_cloud, border_weights=None):
         colors = np.zeros((len(point_cloud), 3))
         
         # Use a blue-to-red colormap for border weights
-        from matplotlib import cm
-        colormap = cm.get_cmap('coolwarm')  # Blue-to-red
+        from matplotlib import pyplot as plt
+        colormap = plt.colormaps.get_cmap('coolwarm')  # Blue-to-red
         
         # Apply colormap
         for i, weight in enumerate(border_weights):
@@ -376,11 +324,7 @@ def color_points_by_border_weights(point_cloud, border_weights=None):
     except ImportError:
         return None
 
-
-
-
-
-def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordinate_frame=True, show_boundaries=False, show_normals=False, color_by_normal_quality=False, color_by_surface_type=False, color_by_group_instance=False, color_by_border_weights=False, coordinate_frame_size=0.1, border_weights=None):
+def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordinate_frame=True, show_boundaries=False, color_by_surface_type=False, color_by_group_instance=False, color_by_border_weights=False, coordinate_frame_size=0.1, border_weights=None):
     """Visualize point cloud using Open3D with simple axis lines, optional boundaries, and explicit normal lines"""
     try:
         import open3d as o3d
@@ -413,49 +357,14 @@ def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordina
                 pcd.colors = o3d.utility.Vector3dVector(surface_colors)
             else:
                 print("⚠️  No surface labels available, using default colors")
-        elif color_by_normal_quality:
-            # Color by normal quality
-            quality_colors = color_points_by_normal_quality(point_cloud)
-            if quality_colors is not None:
-                pcd.colors = o3d.utility.Vector3dVector(quality_colors)
-            else:
-                print("⚠️  No normals available for quality coloring, using default colors")
         else:
-            # Add regular colors if available
-            if point_cloud.shape[1] > 6:
-                colors = point_cloud[:, 3:6]
-                if colors.max() > 1.0:  # Normalize if needed
-                    colors = colors / 255.0
-                pcd.colors = o3d.utility.Vector3dVector(colors)
+            # Use default coloring for point cloud
+            pass
         
         # Create list of geometries to visualize
         geometries = [pcd]
         
-        # Add explicit normal visualization if available and requested
-        has_normals = point_cloud.shape[1] >= 6  # Need at least 6 columns for XYZ + normals
-        if has_normals and show_normals:
-            normals = point_cloud[:, 3:6]  # Normals are in columns 3-5, not 8-11!
-            points = point_cloud[:, :3]
-            
-            # Set point cloud normals for Open3D
-            pcd.normals = o3d.utility.Vector3dVector(normals)
-            
-            # Check if surface labels are available for normal coloring
-            surface_labels = None
-            # With the simplified structure, we don't have surface labels anymore
-            # Normal arrows will be colored uniformly (cyan)
-            
-            # Create explicit normal line segments for better visibility
-            normal_lines = create_normal_lines(points, normals, normal_length=0.03, surface_labels=surface_labels)
-            if normal_lines is not None:
-                geometries.append(normal_lines)
-                print(f"✅ Visualizing {len(normals)} surface normals as cyan line segments")
-            else:
-                print(f"✅ Visualizing {len(normals)} surface normals (Open3D built-in)")
-        elif has_normals:
-            print(f"ℹ️  Point cloud has normals (use show_normals=True to display)")
-        
-        # Add geometries list continues...
+        # Normal visualization removed since normals are no longer in the pipeline
         
         # Add simple axis lines instead of arrows
         if show_coordinate_frame:
@@ -663,7 +572,7 @@ def visualize_combined_matplotlib(point_cloud, vertices, edges, title="Combined 
     plt.tight_layout()
     return fig
 
-def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View", show_coordinate_frame=True, show_boundaries=False, show_normals=False, color_by_normal_quality=False, color_by_surface_type=False, color_by_group_instance=False, color_by_border_weights=False, coordinate_frame_size=0.1, border_weights=None):
+def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View", show_coordinate_frame=True, show_boundaries=False, color_by_surface_type=False, color_by_group_instance=False, color_by_border_weights=False, coordinate_frame_size=0.1, border_weights=None):
     """Visualize point cloud and wireframe together using Open3D with coordinate frame, boundaries, and optional normals"""
     try:
         import open3d as o3d
@@ -700,22 +609,9 @@ def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View
                 pcd.colors = o3d.utility.Vector3dVector(surface_colors)
             else:
                 print("⚠️  No surface labels available, using default colors")
-        elif color_by_normal_quality:
-            # Color by normal quality
-            quality_colors = color_points_by_normal_quality(point_cloud)
-            if quality_colors is not None:
-                pcd.colors = o3d.utility.Vector3dVector(quality_colors)
-            else:
-                print("⚠️  No normals available for quality coloring, using default colors")
         else:
-            # Use regular colors
-            if point_cloud.shape[1] > 6:
-                colors = point_cloud[:, 3:6]
-                if colors.max() > 1.0:
-                    colors = colors / 255.0
-                pcd.colors = o3d.utility.Vector3dVector(colors)
-            else:
-                pcd.paint_uniform_color([0.7, 0.7, 1.0])  # Light blue
+            # Use default coloring
+            pass
         
         # Create wireframe
         line_set = o3d.geometry.LineSet()
@@ -734,29 +630,7 @@ def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View
         # Create list of geometries to visualize
         geometries = [pcd, line_set, vertex_pcd]
         
-        # Add explicit normal visualization if available and requested
-        has_normals = point_cloud.shape[1] >= 6  # Need at least 6 columns for XYZ + normals
-        if has_normals and show_normals:
-            normals = point_cloud[:, 3:6]  # Normals are in columns 3-5, not 8-11!
-            points = point_cloud[:, :3]
-            
-            # Set point cloud normals for Open3D
-            pcd.normals = o3d.utility.Vector3dVector(normals)
-            
-            # Check if surface labels are available for normal coloring
-            surface_labels = None
-            # With the simplified structure, we don't have surface labels anymore
-            # Normal arrows will be colored uniformly (cyan)
-            
-            # Create explicit normal line segments for better visibility
-            normal_lines = create_normal_lines(points, normals, normal_length=0.03, surface_labels=surface_labels)
-            if normal_lines is not None:
-                geometries.append(normal_lines)
-                print(f"✅ Visualizing {len(normals)} surface normals as cyan line segments on point cloud")
-            else:
-                print(f"✅ Visualizing {len(normals)} surface normals on point cloud (Open3D built-in)")
-        elif has_normals:
-            print(f"ℹ️  Point cloud has normals (use show_normals=True to display)")
+        # Normal visualization removed since normals are no longer in the pipeline
         
         # Add simple axis lines instead of arrows
         if show_coordinate_frame:
@@ -884,33 +758,24 @@ def select_coordinate_options():
     print("\nCoordinate frame options:")
     print("1. Show coordinate frame at origin")
     print("2. Show coordinate frame + boundaries")
-    print("3. Show coordinate frame + boundaries + normals")
-    print("4. Show coordinate frame + boundaries + normal quality colors")
-    print("5. Show coordinate frame + boundaries + group instance colors")
-    print("6. Show coordinate frame + boundaries + group instance colors + normals")
-    print("7. Show coordinate frame + boundaries + border weight colors")
-    print("8. No coordinate aids")
+    print("3. Show coordinate frame + boundaries + group instance colors")
+    print("4. Show coordinate frame + boundaries + border weight colors")
+    print("5. No coordinate aids")
     
     while True:
-        choice = input("Choose coordinate option (1-8): ").strip()
+        choice = input("Choose coordinate option (1-5): ").strip()
         if choice == "1":
-            return True, False, False, False, False, False, False  # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
+            return True, False, False, False, False  # show_frame, show_boundaries, color_by_surface_type, color_by_group_instance, color_by_border_weights
         elif choice == "2":
-            return True, True, False, False, False, False, False   # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
+            return True, True, False, False, False   # show_frame, show_boundaries, color_by_surface_type, color_by_group_instance, color_by_border_weights
         elif choice == "3":
-            return True, True, True, False, False, False, False    # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
+            return True, True, False, True, False    # show_frame, show_boundaries, color_by_surface_type, color_by_group_instance, color_by_border_weights
         elif choice == "4":
-            return True, True, False, True, False, False, False    # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
+            return True, True, False, False, True    # show_frame, show_boundaries, color_by_surface_type, color_by_group_instance, color_by_border_weights
         elif choice == "5":
-            return True, True, False, False, False, True, False    # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
-        elif choice == "6":
-            return True, True, True, False, False, True, False     # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
-        elif choice == "7":
-            return True, True, False, False, False, False, True    # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
-        elif choice == "8":
-            return False, False, False, False, False, False, False # show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights
+            return False, False, False, False, False # show_frame, show_boundaries, color_by_surface_type, color_by_group_instance, color_by_border_weights
         else:
-            print("Please enter 1-8")
+            print("Please enter 1-5")
 
 def main():
     """Main visualization function"""
@@ -985,9 +850,9 @@ def main():
     backend = select_visualization_backend()
     
     # Get coordinate options for Open3D
-    show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights = False, False, False, False, False, False, False
+    show_frame, show_boundaries, color_by_surface_type, color_by_group_instance, color_by_border_weights = False, False, False, False, False
     if backend == "open3d":
-        show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights = select_coordinate_options()
+        show_frame, show_boundaries, color_by_surface_type, color_by_group_instance, color_by_border_weights = select_coordinate_options()
     
     # Perform visualization
     sample_name = os.path.basename(dataset.pc_files[sample_idx]).replace('.xyz', '')
@@ -1013,7 +878,7 @@ def main():
         if viz_type == 1:  # Point cloud only
             visualize_point_cloud_open3d(
                 point_cloud, f"Point Cloud - {sample_name}", 
-                show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights, coord_size, border_weights
+                show_frame, show_boundaries, color_by_surface_type, color_by_group_instance, color_by_border_weights, coord_size, border_weights
             )
         elif viz_type == 2:  # Wireframe only
             visualize_wireframe_open3d(
@@ -1023,7 +888,7 @@ def main():
         else:  # Combined
             visualize_combined_open3d(
                 point_cloud, vertices, edges, f"Combined View - {sample_name}",
-                show_frame, show_boundaries, show_normals, color_by_normal_quality, color_by_surface_type, color_by_group_instance, color_by_border_weights, coord_size, border_weights
+                show_frame, show_boundaries, color_by_surface_type, color_by_group_instance, color_by_border_weights, coord_size, border_weights
             )
     
     print("\nVisualization complete!")

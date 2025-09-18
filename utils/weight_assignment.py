@@ -9,7 +9,7 @@ import numpy as np
 from sklearn.neighbors import NearestNeighbors
 
 
-def compute_border_weights(points, k_neighbors=30, normalize_weights=True, multi_scale=False, normals=None, use_normal_analysis=True):
+def compute_border_weights(points, k_neighbors=30, normalize_weights=True, multi_scale=False):
     """
     Compute border weights for all points based on local geometric analysis.
     Highlights object borders (edges and corners) in a unified way.
@@ -19,8 +19,6 @@ def compute_border_weights(points, k_neighbors=30, normalize_weights=True, multi
         k_neighbors (int): Number of neighbors for local analysis
         normalize_weights (bool): Whether to normalize weights to [0, 1]
         multi_scale (bool): Whether to use multi-scale analysis
-        normals (np.ndarray): Pre-computed normals (optional)
-        use_normal_analysis (bool): Whether to use normal-based analysis
     Returns:
         np.ndarray: border_weights of shape (N,)
     """
@@ -55,11 +53,6 @@ def compute_border_weights(points, k_neighbors=30, normalize_weights=True, multi
         vertex_w = calculate_vertex_weights(eigenvalues)
         border_weights = np.maximum(edge_w, vertex_w)
         print(f"Single-scale analysis")
-    if use_normal_analysis and normals is not None and len(normals) == len(points):
-        print("Adding normal-based analysis")
-        normal_edge_weights, normal_vertex_weights = analyze_normal_variations(points, normals, k_neighbors)
-        normal_border_weights = np.maximum(normal_edge_weights, normal_vertex_weights)
-        border_weights = 0.7 * border_weights + 0.3 * normal_border_weights
     border_weights = enhance_weights(border_weights, weight_type="border")
     border_weights = filter_isolated_features(points, border_weights, min_neighbors=3, radius=0.08)  # Stricter filtering
     if normalize_weights:
@@ -408,62 +401,6 @@ def enhance_weights(weights, weight_type="border", enhancement_factor=2.0):
     # Use higher power to suppress low weights more aggressively
     enhanced = np.power(weights, 1.2)  # More aggressive suppression of weak signals
     return enhanced
-
-
-def analyze_normal_variations(points, normals, k_neighbors=20):
-    """
-    Analyze normal vector variations to detect edges and vertices.
-    
-    Args:
-        points (np.ndarray): Point coordinates with shape (N, 3)
-        normals (np.ndarray): Normal vectors with shape (N, 3)
-        k_neighbors (int): Number of neighbors for analysis
-        
-    Returns:
-        tuple: (normal_edge_weights, normal_vertex_weights)
-    """
-    n_points = len(points)
-    normal_edge_weights = np.zeros(n_points)
-    normal_vertex_weights = np.zeros(n_points)
-    
-    # Build neighbor tree
-    nbrs = NearestNeighbors(n_neighbors=k_neighbors + 1, algorithm='kd_tree').fit(points)
-    
-    for i in range(n_points):
-        # Get k-nearest neighbors (including self)
-        distances, indices = nbrs.kneighbors([points[i]])
-        neighbor_indices = indices[0][1:]  # Exclude self
-        neighbor_normals = normals[neighbor_indices]
-        current_normal = normals[i]
-        
-        # Calculate angular variations
-        dot_products = np.dot(neighbor_normals, current_normal)
-        dot_products = np.clip(dot_products, -1, 1)  # Ensure valid range for arccos
-        angles = np.arccos(np.abs(dot_products))  # Use abs to handle normal direction ambiguity
-        
-        # Edge detection: look for consistent angular changes (linear edge patterns)
-        angle_variance = np.var(angles)
-        mean_angle = np.mean(angles)
-        
-        # High mean angle with low variance suggests an edge
-        normal_edge_weights[i] = mean_angle * (1.0 / (1.0 + 5.0 * angle_variance))
-        
-        # Vertex detection: look for multiple distinct normal directions
-        # Count how many neighbors have significantly different normals
-        angle_threshold = np.pi / 6  # 30 degrees
-        different_normals = np.sum(angles > angle_threshold)
-        different_ratio = different_normals / len(neighbor_indices)
-        
-        # High ratio of different normals suggests a vertex
-        normal_vertex_weights[i] = different_ratio * np.mean(angles)
-    
-    # Normalize to [0, 1]
-    if np.max(normal_edge_weights) > 0:
-        normal_edge_weights = normal_edge_weights / np.max(normal_edge_weights)
-    if np.max(normal_vertex_weights) > 0:
-        normal_vertex_weights = normal_vertex_weights / np.max(normal_vertex_weights)
-    
-    return normal_edge_weights, normal_vertex_weights
 
 
 def filter_isolated_features(points, weights, min_neighbors=3, radius=0.1):
