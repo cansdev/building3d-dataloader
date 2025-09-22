@@ -1,10 +1,27 @@
 import os
 import numpy as np
+import torch
+import random
+from torch.utils.data import DataLoader
 
 from datasets import build_dataset
 import yaml
 from easydict import EasyDict
-from torch.utils.data import DataLoader
+from utils.cuda_utils import get_device, to_cuda, print_gpu_memory
+
+# Import our training module
+from train import main_training_setup, train_on_real_dataset
+
+def set_deterministic_seeds(seed=42):
+    """Set all random seeds for reproducible results"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    print(f"Set deterministic seeds to {seed}")
 
 def cfg_from_yaml_file(cfg_file):
     with open(cfg_file, 'r') as f:
@@ -14,64 +31,72 @@ def cfg_from_yaml_file(cfg_file):
             new_config = yaml.load(f)
     return EasyDict(new_config)
 
-def load_training_data():
+def load_training_data(device=None):
     """Load and prepare all training data with full preprocessing"""
-    print("=" * 60)
-    print("BUILDING3D TRAINING DATA LOADER")
-    print("=" * 60)
-    
+
     # Load dataset with preprocessing enabled
     dataset_config = cfg_from_yaml_file('datasets/dataset_config.yaml')
     building3D_dataset = build_dataset(dataset_config.Building3D)
     
-    # Create training dataloader
+    print(f"Dataset loaded: {len(building3D_dataset['train'])} samples")
+    
+    # Configure DataLoader with CUDA optimizations if using GPU
+    use_cuda = device is not None and device.type == 'cuda'
+    
+    # Create deterministic generator for DataLoader
+    generator = torch.Generator()
+    generator.manual_seed(42)
+    
     train_loader = DataLoader(
         building3D_dataset['train'], 
         batch_size=4,
-        shuffle=True, 
+        shuffle=False,  # DISABLED for deterministic overfitting
         drop_last=True, 
         collate_fn=building3D_dataset['train'].collate_batch,
-        num_workers=0
+        pin_memory=use_cuda,  # Pin memory for faster GPU transfer
+        num_workers=0,  # Keep simple for now
+        generator=generator  # Deterministic sampling
     )
     
-    print(f"✓ Training dataset loaded: {len(building3D_dataset['train'])} samples")
-    print(f"✓ DataLoader created with batch_size=4")
+    print(f"Total batches available: {len(train_loader)}")
     
-    # Verify first batch
-    for batch in train_loader:
-        print(f"\n✓ Data verification:")
-        print(f"  - Point clouds: {batch['point_clouds'].shape}")
-        print(f"  - Wireframe vertices: {batch['wf_vertices'].shape}")
-        print(f"  - Wireframe edges: {batch['wf_edges'].shape}")
-        print(f"  - Centroids: {batch['centroid'].shape}")
-        print(f"  - Max distances: {batch['max_distance'].shape}")
-        
-        # Check data quality
-        sample_pc = batch['point_clouds'][0].numpy()
-        print(f"  - Point range: [{sample_pc.min():.3f}, {sample_pc.max():.3f}]")
-        print(f"  - Features per point: {sample_pc.shape[1]}")
-        print(f"  - Preprocessing: Normals, surface groups, border weights included ✓")
-        break
-    
-    print(f"\n✓ Training data ready for model training!")
     return train_loader
 
 def main():
-    """Main function to load training data"""
-    print("Training Data Preparation")
+    """Main function to load training data and start training"""
+    print("Building3D Training Pipeline with CUDA Support")
+    
+    # Set deterministic seeds for reproducible training
+    set_deterministic_seeds(42)
     
     try:
-        # Load training data
-        train_loader = load_training_data()
+        # Get the best available device (CUDA or CPU)
+        device = get_device()
+        print(f"Using device: {device}")
         
+        train_loader = load_training_data(device)
+
         print("\n" + "=" * 60)
-        print("READY FOR TRAINING!")
+        print("STARTING TRAINING SETUP")
         print("=" * 60)
-        return train_loader
+        
+        training_data = train_on_real_dataset(train_loader, device)
+
+        # Save the trained model
+        if 'model' in training_data:
+            model_save_path = 'trained_dgcnn_model.pth'
+            torch.save(training_data['model'].state_dict(), model_save_path)
+            print(f"\n💾 Trained model saved to: {model_save_path}")
+
+        print("\n" + "=" * 60)
+        print("Training setup complete")
+        print("=" * 60)
+
+        return train_loader, training_data
         
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
         raise
 
 if __name__ == "__main__":
-    train_loader = main()
+    train_loader, training_data = main()

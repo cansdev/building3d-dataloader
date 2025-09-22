@@ -85,16 +85,6 @@ def normalize_data(point_cloud, wf_vertices, clean_outliers=True, outlier_params
             - centroid: Original centroid of the point cloud (for denormalization)
             - max_distance: Original max distance from centroid (for denormalization)
     """
-    # Default outlier removal parameters
-    if outlier_params is None:
-        outlier_params = {
-            'stat_k': 20,
-            'stat_std_ratio': 2.0,
-            'radius_threshold': 0.05,
-            'radius_min_neighbors': 2,
-            'elev_std_ratio': 2.5,
-            'elev_percentiles': (5, 95)
-        }
     
     # Store original point cloud for outlier removal
     original_coords = point_cloud[:, 0:3].copy()

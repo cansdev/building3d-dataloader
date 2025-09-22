@@ -1,5 +1,24 @@
+# Images
 *.png
+
+# IDE/Editor
 .cursorrules
-._pycache_
-__pycache__
-.venv
+.vscode/
+
+# Python
+__pycache__/
+*__pycache__*
+
+# PyTorch models and data
+*.pth
+*.pt
+*.npz
+*.pkl
+
+# Preprocessed data cache
+datasets/preprocessed/
+datasets/*/preprocessed/
+
+# Temporary files
+*.tmp
+*.temp

@@ -1,13 +1,16 @@
 #!/usr/bin/python3
 # _*_ coding: utf-8 _*_
 # @Time    : 2025-09-15
-# @Author  : GitHub Copilot
+# @Author  : Batuhan Arda Bekar
 # @File    : preprocess.py
 # @Purpose : Comprehensive preprocessing pipeline for 3D building point clouds
 
 import numpy as np
 import yaml
 import os
+import pickle
+import hashlib
+import time
 from .normalization import normalize_data
 from .outlier_removal import clean_point_cloud
 from .surface_grouping import surface_aware_normalization_pipeline
@@ -20,14 +23,19 @@ class Building3DPreprocessor:
     Integrates normalization, outlier removal, surface grouping, and border weight computation.
     """
     
-    def __init__(self, config=None):
+    def __init__(self, config=None, cache_dir=None):
         """
         Initialize the preprocessor with configuration parameters.
         
         Args:
             config (dict): Configuration dictionary with preprocessing parameters
+            cache_dir (str): Directory to store cached preprocessed data
         """
         self.config = config or {}
+        self.cache_dir = cache_dir or os.path.join(os.path.dirname(__file__), '..', 'datasets', 'preprocessed')
+        
+        # Ensure cache directory exists
+        os.makedirs(self.cache_dir, exist_ok=True)
         
         # Default configuration
         self.default_config = {
@@ -76,7 +84,128 @@ class Building3DPreprocessor:
                 merged_dict.update(self.config[key])
                 self.config[key] = merged_dict
     
-    def process_point_cloud(self, point_cloud, wireframe_vertices=None, verbose=True):
+    def _generate_cache_key(self, point_cloud_file, wireframe_file=None):
+        """
+        Generate a unique cache key based on input files and configuration.
+        
+        Args:
+            point_cloud_file (str): Path to point cloud file
+            wireframe_file (str): Path to wireframe file (optional)
+            
+        Returns:
+            str: Unique cache key
+        """
+        # Get file modification times and sizes for cache invalidation
+        pc_stat = os.stat(point_cloud_file)
+        pc_info = f"{point_cloud_file}_{pc_stat.st_mtime}_{pc_stat.st_size}"
+        
+        wf_info = ""
+        if wireframe_file and os.path.exists(wireframe_file):
+            wf_stat = os.stat(wireframe_file)
+            wf_info = f"_{wireframe_file}_{wf_stat.st_mtime}_{wf_stat.st_size}"
+        
+        # Include configuration in hash
+        config_str = str(sorted(self.config.items()))
+        
+        # Create hash
+        hash_input = f"{pc_info}{wf_info}_{config_str}".encode('utf-8')
+        cache_key = hashlib.md5(hash_input).hexdigest()
+        
+        return cache_key
+    
+    def _get_cache_path(self, cache_key):
+        """Get the full path for a cache file."""
+        return os.path.join(self.cache_dir, f"{cache_key}.pkl")
+    
+    def _save_to_cache(self, cache_key, results):
+        """
+        Save preprocessing results to cache.
+        
+        Args:
+            cache_key (str): Cache key
+            results (dict): Preprocessing results to cache
+        """
+        try:
+            cache_path = self._get_cache_path(cache_key)
+            cache_data = {
+                'results': results,
+                'timestamp': time.time(),
+                'config': self.config.copy()
+            }
+            
+            with open(cache_path, 'wb') as f:
+                pickle.dump(cache_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+                
+            if hasattr(self, '_verbose') and self._verbose:
+                print(f"Saved preprocessed data to cache: {cache_key}")
+                
+        except Exception as e:
+            print(f"Warning: Failed to save cache {cache_key}: {e}")
+    
+    def _load_from_cache(self, cache_key):
+        """
+        Load preprocessing results from cache.
+        
+        Args:
+            cache_key (str): Cache key
+            
+        Returns:
+            dict or None: Cached results if available and valid, None otherwise
+        """
+        try:
+            cache_path = self._get_cache_path(cache_key)
+            
+            if not os.path.exists(cache_path):
+                return None
+            
+            with open(cache_path, 'rb') as f:
+                cache_data = pickle.load(f)
+            
+            # Verify cache validity (config match)
+            if cache_data.get('config') != self.config:
+                if hasattr(self, '_verbose') and self._verbose:
+                    print(f"Cache invalid due to config change: {cache_key}")
+                return None
+            
+            if hasattr(self, '_verbose') and self._verbose:
+                cache_age = time.time() - cache_data.get('timestamp', 0)
+                print(f"Loaded from cache (age: {cache_age:.1f}s): {cache_key}")
+            
+            return cache_data['results']
+            
+        except Exception as e:
+            print(f"Warning: Failed to load cache {cache_key}: {e}")
+            return None
+    
+    def clear_cache(self, max_age_days=30):
+        """
+        Clear old cache files.
+        
+        Args:
+            max_age_days (int): Maximum age in days for cache files
+        """
+        try:
+            current_time = time.time()
+            max_age_seconds = max_age_days * 24 * 3600
+            
+            cleared_count = 0
+            for cache_file in os.listdir(self.cache_dir):
+                if cache_file.endswith('.pkl'):
+                    cache_path = os.path.join(self.cache_dir, cache_file)
+                    file_age = current_time - os.path.getmtime(cache_path)
+                    
+                    if file_age > max_age_seconds:
+                        os.remove(cache_path)
+                        cleared_count += 1
+            
+            if cleared_count > 0:
+                print(f"Cleared {cleared_count} old cache files")
+                
+        except Exception as e:
+            print(f"Warning: Failed to clear cache: {e}")
+    
+    def process_point_cloud(self, point_cloud, wireframe_vertices=None, verbose=True, 
+                           point_cloud_file=None, wireframe_file=None, use_cache=True):
         """
         Process a point cloud through the complete pipeline.
         
@@ -84,10 +213,23 @@ class Building3DPreprocessor:
             point_cloud (np.ndarray): Input point cloud with shape (N, D) where D >= 3
             wireframe_vertices (np.ndarray, optional): Wireframe vertices to transform consistently
             verbose (bool): Whether to print processing information
+            point_cloud_file (str, optional): Path to point cloud file for caching
+            wireframe_file (str, optional): Path to wireframe file for caching
+            use_cache (bool): Whether to use caching
             
         Returns:
             dict: Dictionary containing processed data and metadata
         """
+        self._verbose = verbose  # Store for cache methods
+        
+        # Try to load from cache if file paths are provided
+        cache_key = None
+        if use_cache and point_cloud_file:
+            cache_key = self._generate_cache_key(point_cloud_file, wireframe_file)
+            cached_results = self._load_from_cache(cache_key)
+            if cached_results is not None:
+                return cached_results
+        
         if verbose:
             print(f"\n=== Building3D Preprocessing Pipeline ===")
             print(f"Input point cloud shape: {point_cloud.shape}")
@@ -123,6 +265,10 @@ class Building3DPreprocessor:
             print(f"\n=== Pipeline Complete ===")
             print(f"Final point cloud shape: {results['processed_points'].shape}")
             print(f"Processing steps: {', '.join(results['metadata']['processing_steps'])}")
+        
+        # Save to cache if enabled and cache key available
+        if use_cache and cache_key:
+            self._save_to_cache(cache_key, results)
         
         return results
     
@@ -172,17 +318,12 @@ class Building3DPreprocessor:
                 wireframe_vertices = (wireframe_vertices - centroid) / max_distance
                 results['processed_wireframe'] = wireframe_vertices
             
-            # Reconstruct full point cloud with surface information (no normals)
+            # Reconstruct point cloud with X Y Z GroupID (BorderWeight to be added later)
             n_cleaned = len(cleaned_points)
             
-            if point_cloud.shape[1] >= 3:
-                # Determine output dimensions
-                output_dims = 3  # XYZ
-                if group_ids is not None:
-                    output_dims += 1  # +1 for group ID
-                if point_cloud.shape[1] > 3:
-                    output_dims += (point_cloud.shape[1] - 3)  # preserve other features
-                
+            if point_cloud.shape[1] >= 8:  # Expecting X Y Z R G B A I format
+                # Output: X Y Z GroupID (BorderWeight will be added in _compute_border_weights)
+                output_dims = 4  # XYZ + GroupID (BorderWeight added later)
                 reconstructed_pc = np.zeros((n_cleaned, output_dims))
                 
                 # Set coordinates
@@ -194,19 +335,10 @@ class Building3DPreprocessor:
                     reconstructed_pc[:, col_idx] = group_ids
                     col_idx += 1
                 
-                # Preserve original features if any (colors, intensity, etc.)
-                if point_cloud.shape[1] > 3:
-                    original_features = point_cloud.shape[1] - 3
-                    if col_idx + original_features <= output_dims:
-                        # Map features from original to cleaned points using nearest neighbors
-                        from sklearn.neighbors import NearestNeighbors
-                        nbrs = NearestNeighbors(n_neighbors=1).fit(point_cloud[:, 0:3])
-                        distances, indices = nbrs.kneighbors(cleaned_points)
-                        reconstructed_pc[:, col_idx:col_idx+original_features] = point_cloud[indices.flatten(), 3:3+original_features]
-                
+                # Note: BorderWeight will be added by _compute_border_weights step
                 results['processed_points'] = reconstructed_pc
             else:
-                # Simple case: just coordinates + group ids
+                # Fallback: just coordinates + group ids
                 components = [normalized_coords]
                 if group_ids is not None:
                     components.append(group_ids.reshape(-1, 1))
@@ -321,7 +453,7 @@ class Building3DPreprocessor:
         return updated_sample
 
 
-def create_default_preprocessor(config_file=None):
+def create_default_preprocessor(config_file=None, cache_dir=None):
     """Create a preprocessor using configuration from YAML file."""
     if config_file is None:
         # Default path relative to the utils directory
@@ -332,5 +464,9 @@ def create_default_preprocessor(config_file=None):
         
     # Extract preprocessor config from Building3D section
     preprocessor_config = yaml_config['Building3D']['preprocessor']
+    
+    # Set default cache directory if not provided
+    if cache_dir is None:
+        cache_dir = os.path.join(os.path.dirname(__file__), '..', 'datasets', 'preprocessed')
         
-    return Building3DPreprocessor(preprocessor_config)
+    return Building3DPreprocessor(preprocessor_config, cache_dir=cache_dir)

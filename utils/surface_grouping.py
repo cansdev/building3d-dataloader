@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 # _*_ coding: utf-8 _*_
 # @Time    : 2025-09-15
-# @Author  : GitHub Copilot
+# @Author  : Batuhan Arda Bekar
 # @File    : surface_grouping.py
 # @Purpose : Surface grouping and segmentation for building point clouds
 

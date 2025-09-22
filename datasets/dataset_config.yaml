@@ -1,27 +1,27 @@
+# Centralized Configuration for Building3D DGCNN Training
+
+# Dataset Configuration
 Building3D:
   root_dir: './datasets/demo_dataset' # Building3D dataset root dir
-  num_points: 5120
+  num_points: 2560
   use_color: True
   use_intensity: True
-  normalize: True
-  augment: True
-  use_surface_grouping: True  # Enable surface-aware processing
-  use_outlier_removal: True  # Enable outlier removal (can be overridden programmatically)
+  augment: False  # Keep disabled for deterministic training
   
   # Preprocessor Configuration
   preprocessor:
     normalize: True
     use_outlier_removal: True
-    use_surface_grouping: True  # Enable advanced processing
-    compute_normals: True
-    compute_border_weights: True
+    use_surface_grouping: True
+    compute_border_weights: True  
+    cache_dir: 'datasets/preprocessed'  # Preprocessed data cache directory
     
     outlier_params:
       stat_k: 15
-      stat_std_ratio: 3.0  # More conservative
+      stat_std_ratio: 3.0 
       radius_threshold: 0.04
-      radius_min_neighbors: 2  # More lenient
-      elev_std_ratio: 3.0  # More conservative
+      radius_min_neighbors: 2 
+      elev_std_ratio: 3.0 
       auto_scale_radii: True
     
     grouping_params:
@@ -32,9 +32,153 @@ Building3D:
       refinement_params:
         merge_distance: 0.05
         min_group_size: 15
+      
+      # Surface-specific processing parameters
+      surface_specific:
+        floor:
+          outlier_removal:
+            stat_k: 15
+            stat_std_ratio: 1.8
+            radius_threshold: 0.03
+            radius_min_neighbors: 4
+            auto_scale_radius_param: True
+          normal_computation:
+            base_k_neighbors: 15
+            curvature_threshold: 0.05
+            smooth_iterations: 2
+            smooth_radius: 0.04
+            adaptive_k: True
+        wall:
+          outlier_removal:
+            stat_k: 12
+            stat_std_ratio: 2.0
+            radius_threshold: 0.025
+            radius_min_neighbors: 3
+            auto_scale_radius_param: True
+          normal_computation:
+            base_k_neighbors: 12
+            curvature_threshold: 0.08
+            smooth_iterations: 1
+            smooth_radius: 0.03
+            adaptive_k: True
+        roof:
+          outlier_removal:
+            stat_k: 10
+            stat_std_ratio: 2.5
+            radius_threshold: 0.04
+            radius_min_neighbors: 2
+            auto_scale_radius_param: True
+          normal_computation:
+            base_k_neighbors: 10
+            curvature_threshold: 0.15
+            smooth_iterations: 1
+            smooth_radius: 0.05
+            adaptive_k: True
+        edge:
+          outlier_removal:
+            stat_k: 8
+            stat_std_ratio: 3.0
+            radius_threshold: 0.02
+            radius_min_neighbors: 2
+            auto_scale_radius_param: True
+          normal_computation:
+            base_k_neighbors: 8
+            curvature_threshold: 0.3
+            smooth_iterations: 0
+            smooth_radius: 0.02
+            adaptive_k: True
+        default:
+          outlier_removal:
+            stat_k: 12
+            stat_std_ratio: 3.5
+            radius_threshold: 0.03
+            radius_min_neighbors: 2
+            auto_scale_radius_param: True
+          normal_computation:
+            base_k_neighbors: 12
+            curvature_threshold: 0.1
+            smooth_iterations: 1
+            smooth_radius: 0.04
+            adaptive_k: True
+      
+      # Normal processing and refinement parameters
+      normal_similarity:
+        angle_threshold: 30.0
+      splitting:
+        normal_angle_threshold: 45.0
+        min_split_size: 10
+      merging:
+        max_distance: 0.1
+        min_normal_similarity: 0.7
+        same_type_bonus: 0.2
+      classification:
+        wall_normal_z_threshold: 0.3
+        floor_normal_z_threshold: 0.8
+      
+      # Height stratification parameters
+      height_stratification:
+        floor_height_range: [0.0, 0.3]
+        wall_height_range: [0.3, 0.85]
+        roof_height_min: 0.85
+        normalize_heights: True
     
     weight_params:
       k_neighbors: 25
       normalize_weights: True
-      multi_scale: True  # Enable multi-scale analysis
+      multi_scale: True  
       use_normal_analysis: True
+
+# Model Configuration
+model:
+  architecture: 'dgcnn'
+  input_dim: 5  # X, Y, Z, GroupID, BorderWeight
+  k: 20  # Number of nearest neighbors
+  max_vertices: 64  # Maximum number of vertices to predict
+  dropout_rates:
+    conv: 0.3  # Dropout for conv layers
+    linear: 0.2  # Dropout for linear layers
+
+# Training Configuration
+training:
+  batch_size: 4
+  num_epochs: 500
+  learning_rate: 0.005
+  weight_decay: 0.0
+  optimizer: 'adam'
+  
+  # Loss weights for multi-task learning
+  loss_weights:
+    vertices: 1.0
+    num_vertices: 0.1
+  
+  # Deterministic training settings
+  seed: 42
+  deterministic: True
+  
+  # Data loading
+  num_workers: 0  
+  pin_memory: True
+  shuffle: False 
+
+# Paths Configuration
+paths:
+  model_save_path: 'trained_dgcnn_model.pth'
+  output_dir: 'output'
+
+# Visualization Configuration
+visualization:
+  default_model_path: 'trained_dgcnn_model.pth'
+  sample_id: 1 
+  point_size: 3
+  vertex_size: 20
+  
+# Device Configuration
+device:
+  auto_detect: True
+  prefer_cuda: True
+  
+# Logging Configuration
+logging:
+  verbose: True
+  print_gpu_memory: True
+  save_training_progress: True

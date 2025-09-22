@@ -3,7 +3,7 @@
 # @Time    : 2023-08-11 3:06 p.m.
 # @Author  : shangfeng
 # @Organization: University of Calgary
-# @File    : building3d.py.py
+# @File    : building3d.py
 # @IDE     : PyCharm
 
 import os
@@ -13,9 +13,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from collections import defaultdict
-from utils.normalization import normalize_data
-from utils.surface_grouping import surface_aware_normalization_pipeline
-from utils.preprocess import Building3DPreprocessor, create_default_preprocessor
+from utils.preprocess import create_default_preprocessor
 
 def load_wireframe(wireframe_file):
     vertices = []
@@ -49,16 +47,23 @@ def save_wireframe(vertices, edges, wireframe_file):
             f.write('l ' + edge + '\n')
 
 
-def random_sampling(pc, num_points, replace=None, return_choices=False):
+def random_sampling(pc, num_points, replace=None, return_choices=False, seed=None):
     r"""
+    Deterministic random sampling with optional seed for reproducibility.
     :param pc: N * 3
     :param num_points: Int
     :param replace:
     :param return_choices:
+    :param seed: Random seed for deterministic sampling
     :return:
     """
     if replace is None:
         replace = pc.shape[0] < num_points
+    
+    # Set seed for deterministic sampling if provided
+    if seed is not None:
+        np.random.seed(seed)
+    
     choices = np.random.choice(pc.shape[0], num_points, replace=replace)
     if return_choices:
         return pc[choices], choices
@@ -80,21 +85,22 @@ class Building3DReconstructionDataset(Dataset):
         self.num_points = dataset_config.num_points
         self.use_color = dataset_config.use_color
         self.use_intensity = dataset_config.use_intensity
-        self.normalize = dataset_config.normalize
+        # Read parameters from preprocessor section (moved there to avoid duplication)
+        self.normalize = dataset_config.preprocessor.normalize
         self.augment = dataset_config.augment
-        self.use_surface_grouping = getattr(dataset_config, 'use_surface_grouping', True)  # Default to True (advanced)
-        self.use_outlier_removal = getattr(dataset_config, 'use_outlier_removal', True)
+        self.use_surface_grouping = dataset_config.preprocessor.use_surface_grouping
+        self.use_outlier_removal = dataset_config.preprocessor.use_outlier_removal
         
         # Initialize preprocessor using YAML configuration
         self.preprocessor = create_default_preprocessor()
         
-        # Override specific settings from dataset config if needed
-        if hasattr(dataset_config, 'use_outlier_removal'):
-            self.preprocessor.config['use_outlier_removal'] = dataset_config.use_outlier_removal
-        if hasattr(dataset_config, 'normalize'):
-            self.preprocessor.config['normalize'] = dataset_config.normalize
-        if hasattr(dataset_config, 'use_surface_grouping'):
-            self.preprocessor.config['use_surface_grouping'] = dataset_config.use_surface_grouping
+        # Override specific settings from dataset config (now in preprocessor section)
+        if hasattr(dataset_config.preprocessor, 'use_outlier_removal'):
+            self.preprocessor.config['use_outlier_removal'] = dataset_config.preprocessor.use_outlier_removal
+        if hasattr(dataset_config.preprocessor, 'normalize'):
+            self.preprocessor.config['normalize'] = dataset_config.preprocessor.normalize
+        if hasattr(dataset_config.preprocessor, 'use_surface_grouping'):
+            self.preprocessor.config['use_surface_grouping'] = dataset_config.preprocessor.use_surface_grouping
 
         assert split_set in ["train", "test"]
         self.split_set = split_set
@@ -134,37 +140,49 @@ class Building3DReconstructionDataset(Dataset):
         wf_vertices, wf_edges = load_wireframe(wireframe_file)
 
         # ------------------------------- Dataset Preprocessing ------------------------------
-        if self.normalize:
-            # Use unified preprocessing pipeline
-            result = self.preprocessor.process_point_cloud(
+                    # Use unified preprocessing pipeline with caching
+        result = self.preprocessor.process_point_cloud(
                 point_cloud=point_cloud,
-                wireframe_vertices=wf_vertices
-            )
-            
-            point_cloud = result['processed_points']
-            wf_vertices = result['processed_wireframe'] 
+                wireframe_vertices=wf_vertices,
+                point_cloud_file=pc_file,
+                wireframe_file=wireframe_file,
+                use_cache=True,
+                verbose=False  # Set to False to reduce output during training
+                )
+
+        # ALWAYS use preprocessed data from the pipeline
+        point_cloud = result['processed_points']  # Always X Y Z GroupID BorderWeight
+        wf_vertices = result['processed_wireframe']  # Always processed vertices
+        
+        if self.normalize:
+            # Only store metadata if normalization was used
             centroid = result['metadata']['centroid']
             max_distance = result['metadata']['max_distance']
 
         if self.num_points:
-            point_cloud = random_sampling(point_cloud, self.num_points)
+            # Use scan_idx as seed for deterministic sampling per sample
+            sample_seed = int(os.path.splitext(os.path.basename(pc_file))[0])
+            point_cloud = random_sampling(point_cloud, self.num_points, seed=sample_seed)
 
         if self.augment:
-            if np.random.random() > 0.5:
-                # Flipping along the YZ plane
-                point_cloud[:, 0] = -1 * point_cloud[:, 0]
-                wf_vertices[:, 0] = -1 * wf_vertices[:, 0]
+            # DISABLE all augmentation for consistent overfitting
+            # The augmentation code is commented out to ensure deterministic training
+            pass
+            # if np.random.random() > 0.5:
+            #     # Flipping along the YZ plane
+            #     point_cloud[:, 0] = -1 * point_cloud[:, 0]
+            #     wf_vertices[:, 0] = -1 * wf_vertices[:, 0]
 
-            if np.random.random() > 0.5:
-                # Flipping along the XZ plane
-                point_cloud[:, 1] = -1 * point_cloud[:, 1]
-                wf_vertices[:, 1] = -1 * wf_vertices[:, 1]
+            # if np.random.random() > 0.5:
+            #     # Flipping along the XZ plane
+            #     point_cloud[:, 1] = -1 * point_cloud[:, 1]
+            #     wf_vertices[:, 1] = -1 * wf_vertices[:, 1]
 
-            # Rotation along up-axis/Z-axis
-            rot_angle = (np.random.random() * np.pi / 18) - np.pi / 36  # -5 ~ +5 degree
-            rot_mat = rotz(rot_angle)
-            point_cloud[:, 0:3] = np.dot(point_cloud[:, 0:3], np.transpose(rot_mat))
-            wf_vertices[:, 0:3] = np.dot(wf_vertices[:, 0:3], np.transpose(rot_mat))
+            # # Rotation along up-axis/Z-axis
+            # rot_angle = (np.random.random() * np.pi / 18) - np.pi / 36  # -5 ~ +5 degree
+            # rot_mat = rotz(rot_angle)
+            # point_cloud[:, 0:3] = np.dot(point_cloud[:, 0:3], np.transpose(rot_mat))
+            # wf_vertices[:, 0:3] = np.dot(wf_vertices[:, 0:3], np.transpose(rot_mat))
 
         # -------------------------------Edge Vertices ------------------------
         wf_edges_vertices = np.stack((wf_vertices[wf_edges[:, 0]], wf_vertices[wf_edges[:, 1]]), axis=1)
