@@ -5,6 +5,9 @@ Loads a trained model, runs inference on one sample, and renders a single 3D vie
 with point cloud, ground-truth corners, and predicted corners (via threshold).
 """
 
+r"""NOTE FOR WSL: libcudnn.so.8 crash loads in C:\Users\saric\AppData\Local\Temp\wsl-crashes"""
+"""Tried sudo apt install nvidia-cuda-toolkit - works"""
+
 import os
 import sys
 import numpy as np
