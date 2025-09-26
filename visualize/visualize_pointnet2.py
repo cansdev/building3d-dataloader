@@ -28,7 +28,7 @@ import argparse
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from datasets import build_dataset
-from models.PointNet2 import PointNet2CornerDetection
+from models.PointNet2 import PointNet2CornerDetection, PointNet2CornerDetectionHungarian
 import yaml
 from easydict import EasyDict
 
@@ -81,13 +81,27 @@ def visualize_pointnet2_results(model, dataset, sample_idx, device, threshold=CO
     
     # Get PointNet2 predictions
     with torch.no_grad():
-        corner_logits, _ = model(point_clouds)  # [1, N]
-        corner_probs = torch.sigmoid(corner_logits[0])  # [N]
-        corner_predictions = (corner_probs > threshold).cpu().numpy()  # [N]
+        outputs = model(point_clouds)
+        # Handle Hungarian model (dict output with query-based corners)
+        if isinstance(outputs, dict) and 'pred_logits' in outputs and 'pred_boxes' in outputs:
+            # Query-based predictions: get corner coords and confidences
+            batch_corners, batch_scores = model.get_corner_predictions(point_clouds, threshold=threshold)
+            predicted_corner_coords = batch_corners[0].cpu().numpy()  # [K, 3]
+            predicted_corner_scores = batch_scores[0].cpu().numpy()   # [K]
+            corner_probs = None
+            corner_predictions = None
+        else:
+            # Per-point logits model
+            corner_logits = outputs[0] if isinstance(outputs, (list, tuple)) else outputs
+            corner_probs = torch.sigmoid(corner_logits[0])  # [N]
+            corner_predictions = (corner_probs > threshold).cpu().numpy()  # [N]
     
     # Get point cloud coordinates
     pc_xyz = point_clouds[0, :, :3].cpu().numpy()  # [N, 3]
-    predicted_corners = pc_xyz[corner_predictions]  # [K, 3]
+    if corner_predictions is not None:
+        predicted_corners = pc_xyz[corner_predictions]  # [K, 3]
+    else:
+        predicted_corners = predicted_corner_coords  # [K, 3]
     
     # Create visualization
     fig = plt.figure(figsize=(18, 6))
@@ -115,12 +129,16 @@ def visualize_pointnet2_results(model, dataset, sample_idx, device, threshold=CO
     ax2.set_zlabel('Z')
     ax2.legend()
     
-    # Plot 3: Predicted corners with probability coloring
+    # Plot 3: Predicted corners with probability coloring (if available)
     ax3 = fig.add_subplot(133, projection='3d')
     
-    # Color points by corner probability
-    scatter = ax3.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
-                         c=corner_probs.cpu().numpy(), cmap='viridis', s=2, alpha=0.8)
+    # Color points by corner probability if per-point probs exist; otherwise plain
+    if corner_probs is not None:
+        scatter = ax3.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
+                             c=corner_probs.cpu().numpy(), cmap='viridis', s=2, alpha=0.8)
+    else:
+        scatter = ax3.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
+                             c='lightgray', s=1, alpha=0.6)
     
     # Highlight predicted corners
     if len(predicted_corners) > 0:
@@ -134,9 +152,10 @@ def visualize_pointnet2_results(model, dataset, sample_idx, device, threshold=CO
     ax3.set_zlabel('Z')
     ax3.legend()
     
-    # Add colorbar for probability
-    cbar = plt.colorbar(scatter, ax=ax3, shrink=0.5, aspect=20)
-    cbar.set_label('Corner Probability')
+    # Add colorbar for probability only when available
+    if corner_probs is not None:
+        cbar = plt.colorbar(scatter, ax=ax3, shrink=0.5, aspect=20)
+        cbar.set_label('Corner Probability')
     
     plt.tight_layout()
     
@@ -145,11 +164,18 @@ def visualize_pointnet2_results(model, dataset, sample_idx, device, threshold=CO
     print(f"Total points: {len(pc_xyz)}")
     print(f"Ground truth corners: {len(gt_corners)}")
     print(f"Predicted corners (>{threshold}): {len(predicted_corners)}")
-    print(f"Corner probability range: [{corner_probs.min():.3f}, {corner_probs.max():.3f}]")
-    print(f"Average corner probability: {corner_probs.mean():.3f}")
-    print(f"Points with prob > 0.1: {(corner_probs > 0.1).sum().item()}")
-    print(f"Points with prob > 0.2: {(corner_probs > 0.2).sum().item()}")
-    print(f"Points with prob > 0.3: {(corner_probs > 0.3).sum().item()}")
+    if corner_probs is not None:
+        print(f"Corner probability range: [{corner_probs.min():.3f}, {corner_probs.max():.3f}]")
+        print(f"Average corner probability: {corner_probs.mean():.3f}")
+        print(f"Points with prob > 0.1: {(corner_probs > 0.1).sum().item()}")
+        print(f"Points with prob > 0.2: {(corner_probs > 0.2).sum().item()}")
+        print(f"Points with prob > 0.3: {(corner_probs > 0.3).sum().item()}")
+    else:
+        if predicted_corners.shape[0] > 0:
+            print(f"Predicted corner score range: [{predicted_corner_scores.min():.3f}, {predicted_corner_scores.max():.3f}]")
+            print(f"Average predicted corner score: {predicted_corner_scores.mean():.3f}")
+        else:
+            print("No predicted corners above threshold.")
     
     return fig
 
@@ -266,7 +292,7 @@ def main():
             input_channels += 1
         
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model_path = '../output/corner_detection_model_hungarian.pth'
+        model_path = '../output/corner_detection_model.pth'
         
         if not os.path.exists(model_path):
             print(f"Error: Model file not found at {model_path}")
