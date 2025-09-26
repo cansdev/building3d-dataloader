@@ -13,7 +13,7 @@ on the Building3D dataset. It shows:
 # =============================================================================
 # HYPERPARAMETERS
 # =============================================================================
-CORNER_THRESHOLD = 0.2  # Threshold for corner predictions (0.0-1.0)
+CORNER_THRESHOLD = 0.3  # Threshold for corner predictions (0.0-1.0)
 # =============================================================================
 
 import os

@@ -97,7 +97,21 @@ def train_model(train_loader, test_loader, dataset_config):
         for batch_idx, batch in enumerate(train_loader):
             # Move data to device
             point_clouds = batch['point_clouds'].to(device)  # [B, N, C]
-            wf_vertices = batch['wf_vertices'].to(device)    # [B, M, 3]
+            # Handle wf_vertices being either a padded tensor [B, M, 3] or a list of [Mi, 3]
+            wf_vertices_batch = batch['wf_vertices']
+            if isinstance(wf_vertices_batch, list):
+                # Pad to the max number of corners with sentinel -1e0
+                max_m = max(v.shape[0] for v in wf_vertices_batch) if len(wf_vertices_batch) > 0 else 0
+                if max_m == 0:
+                    wf_vertices = torch.full((point_clouds.shape[0], 1, 3), -1e0, device=device, dtype=point_clouds.dtype)
+                else:
+                    wf_vertices = torch.full((len(wf_vertices_batch), max_m, 3), -1e0, device=device, dtype=wf_vertices_batch[0].dtype)
+                    for b, v in enumerate(wf_vertices_batch):
+                        if v.numel() > 0:
+                            m = v.shape[0]
+                            wf_vertices[b, :m, :] = v.to(device)
+            else:
+                wf_vertices = wf_vertices_batch.to(device)    # [B, M, 3]
             
             # Create improved corner labels with soft labels
             corner_labels = create_corner_labels_improved(

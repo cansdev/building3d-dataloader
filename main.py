@@ -45,9 +45,8 @@ def train_with_preprocessed_data():
         collate_fn=building3D_dataset['test'].collate_batch
     )
     
-    # Call training function with preprocessed data
-    # Use Hungarian matching for better accuracy
-    model = train_model_hungarian(train_loader, test_loader, dataset_config)
+    # Call training function with preprocessed data using corner loss
+    model = train_model(train_loader, test_loader, dataset_config)
     return model
 
 def run_visualization():
