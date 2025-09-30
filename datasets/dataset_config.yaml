@@ -6,7 +6,7 @@ Building3D:
   num_points: 2560
   use_color: True
   use_intensity: True
-  augment: False  # Keep disabled for deterministic training
+  augment: True 
   
   # Preprocessor Configuration
   preprocessor:

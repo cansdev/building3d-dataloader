@@ -91,6 +91,9 @@ class Building3DReconstructionDataset(Dataset):
         self.use_surface_grouping = dataset_config.preprocessor.use_surface_grouping
         self.use_outlier_removal = dataset_config.preprocessor.use_outlier_removal
         
+        # Epoch counter for deterministic-but-varying random sampling
+        self.epoch = 0
+        
         # Initialize preprocessor using YAML configuration
         self.preprocessor = create_default_preprocessor()
         
@@ -115,6 +118,10 @@ class Building3DReconstructionDataset(Dataset):
 
     def __len__(self):
         return len(self.pc_files)
+    
+    def set_epoch(self, epoch):
+        """Set the epoch number for deterministic-but-varying random sampling."""
+        self.epoch = epoch
 
     def __getitem__(self, index):
         # ------------------------------- Point Clouds ------------------------------
@@ -159,30 +166,31 @@ class Building3DReconstructionDataset(Dataset):
             centroid = result['metadata']['centroid']
             max_distance = result['metadata']['max_distance']
 
+        # ------------------------------- Data Augmentation (BEFORE sampling) ------------------------------
+        # Apply augmentation AFTER preprocessing to preserve GroupID and BorderWeight
+        # Only augment during training, not testing
+        if self.augment and self.split_set == 'train':
+            
+            rot_angle = np.random.uniform(-np.pi, np.pi)  # ±180°
+            rot_mat = rotz(rot_angle)
+            
+            point_cloud[:, 0:3] = np.dot(point_cloud[:, 0:3], np.transpose(rot_mat))
+            wf_vertices[:, 0:3] = np.dot(wf_vertices[:, 0:3], np.transpose(rot_mat))
+            
+            # Uniform scaling (0.95 to 1.05) - applied to BOTH points and vertices
+            scale = np.random.uniform(0.95, 1.05)
+            point_cloud[:, 0:3] *= scale
+            wf_vertices[:, 0:3] *= scale
+            
+            # Note: GroupID (column 3) and BorderWeight (column 4) remain unchanged
+            # Note: Normalization metadata will be recomputed below if needed
+
+        # ------------------------------- Random Point Sampling ------------------------------
         if self.num_points:
-            # Use scan_idx as seed for deterministic sampling per sample
-            sample_seed = int(os.path.splitext(os.path.basename(pc_file))[0])
+            # Use epoch + sample index for deterministic-but-varying sampling
+            # Different points each epoch, but reproducible across runs
+            sample_seed = (self.epoch * 10000 + index) % (2**31)  # Combine epoch and index
             point_cloud = random_sampling(point_cloud, self.num_points, seed=sample_seed)
-
-        if self.augment:
-            # DISABLE all augmentation for consistent overfitting
-            # The augmentation code is commented out to ensure deterministic training
-            pass
-            # if np.random.random() > 0.5:
-            #     # Flipping along the YZ plane
-            #     point_cloud[:, 0] = -1 * point_cloud[:, 0]
-            #     wf_vertices[:, 0] = -1 * wf_vertices[:, 0]
-
-            # if np.random.random() > 0.5:
-            #     # Flipping along the XZ plane
-            #     point_cloud[:, 1] = -1 * point_cloud[:, 1]
-            #     wf_vertices[:, 1] = -1 * wf_vertices[:, 1]
-
-            # # Rotation along up-axis/Z-axis
-            # rot_angle = (np.random.random() * np.pi / 18) - np.pi / 36  # -5 ~ +5 degree
-            # rot_mat = rotz(rot_angle)
-            # point_cloud[:, 0:3] = np.dot(point_cloud[:, 0:3], np.transpose(rot_mat))
-            # wf_vertices[:, 0:3] = np.dot(wf_vertices[:, 0:3], np.transpose(rot_mat))
 
         # -------------------------------Edge Vertices ------------------------
         wf_edges_vertices = np.stack((wf_vertices[wf_edges[:, 0]], wf_vertices[wf_edges[:, 1]]), axis=1)

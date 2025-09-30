@@ -730,13 +730,14 @@ def select_visualization_type():
     print("1. Point cloud only")
     print("2. Wireframe only") 
     print("3. Both (combined view)")
+    print("4. Augmentation comparison (same sample 4 times with different augmentations)")
     
     while True:
-        choice = input("Choose visualization type (1, 2, or 3): ").strip()
-        if choice in ["1", "2", "3"]:
+        choice = input("Choose visualization type (1, 2, 3, or 4): ").strip()
+        if choice in ["1", "2", "3", "4"]:
             return int(choice)
         else:
-            print("Please enter 1, 2, or 3")
+            print("Please enter 1, 2, 3, or 4")
 
 def select_outlier_removal():
     """Select whether to enable outlier removal in the pipeline"""
@@ -776,6 +777,77 @@ def select_coordinate_options():
             return False, False, False, False, False # show_frame, show_boundaries, color_by_surface_type, color_by_group_instance, color_by_border_weights
         else:
             print("Please enter 1-5")
+
+def visualize_augmentation_comparison(dataset, sample_idx):
+    """
+    Visualize augmentation effect - show same sample 4 times with different augmentations
+    """
+    print("\n🎨 Visualizing Augmentation Effects")
+    print("=" * 60)
+    
+    # Create figure with 4 subplots (2x2)
+    fig = plt.figure(figsize=(16, 12))
+    
+    for i in range(4):
+        # Get augmented sample
+        sample = dataset[sample_idx]
+        point_cloud = sample['point_clouds']  # [2560, 5]
+        wf_vertices = sample['wf_vertices']   # [V, 3]
+        
+        # Filter valid wireframe vertices
+        valid_mask = wf_vertices[:, 0] > -9.0
+        wf_vertices_valid = wf_vertices[valid_mask]
+        
+        # Create 3D subplot
+        ax = fig.add_subplot(2, 2, i+1, projection='3d')
+        
+        # Plot point cloud (subsample for clarity)
+        subsample_idx = np.random.choice(point_cloud.shape[0], 1000, replace=False)
+        pc_sub = point_cloud[subsample_idx]
+        
+        # Color by GroupID
+        group_colors = pc_sub[:, 3]  # GroupID
+        scatter = ax.scatter(
+            pc_sub[:, 0], pc_sub[:, 1], pc_sub[:, 2],
+            c=group_colors, cmap='tab10', s=1, alpha=0.3
+        )
+        
+        # Plot wireframe vertices
+        ax.scatter(
+            wf_vertices_valid[:, 0],
+            wf_vertices_valid[:, 1],
+            wf_vertices_valid[:, 2],
+            c='red', s=50, marker='o', edgecolors='black', linewidths=1
+        )
+        
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        ax.set_title(f'Augmentation {i+1}\nX:[{pc_sub[:, 0].min():.2f}, {pc_sub[:, 0].max():.2f}] '
+                     f'Y:[{pc_sub[:, 1].min():.2f}, {pc_sub[:, 1].max():.2f}]')
+        
+        # Set same limits for comparison
+        ax.set_xlim([-1, 1])
+        ax.set_ylim([-1, 1])
+        ax.set_zlim([-0.5, 0.5])
+    
+    sample_name = os.path.basename(dataset.pc_files[sample_idx]).replace('.xyz', '')
+    plt.suptitle(f'Sample {sample_name}: Same Building with Different Random Augmentations\n'
+                 'Red points = Wireframe vertices | Colored points = Point cloud (by GroupID)',
+                 fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    
+    output_file = 'augmentation_comparison.png'
+    plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    print(f"\n✅ Visualization saved to: {output_file}")
+    print(f"   Each subplot shows the same building with different:")
+    print(f"   - Random Z-axis rotation (-180° to +180°)")
+    print(f"   - Random scale (±5%)")
+    print(f"   - Tiny jittering (σ=0.002)")
+    print(f"   - Random point selection (2560 from full cloud)")
+    
+    plt.show()
+
 
 def main():
     """Main visualization function"""
@@ -857,7 +929,9 @@ def main():
     # Perform visualization
     sample_name = os.path.basename(dataset.pc_files[sample_idx]).replace('.xyz', '')
     
-    if backend == "matplotlib":
+    if viz_type == 4:  # Augmentation comparison
+        visualize_augmentation_comparison(dataset, sample_idx)
+    elif backend == "matplotlib":
         if viz_type == 1:  # Point cloud only
             fig, ax = visualize_point_cloud_matplotlib(point_cloud, f"Point Cloud - {sample_name}", border_weights=border_weights)
             plt.show()

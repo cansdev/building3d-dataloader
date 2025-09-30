@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 # _*_ coding: utf-8 _*_
 # @Time    : 2025-09-14
-# @Author  : GitHub Copilot
+# @Author  : Batuhan Arda Bekar
 # @File    : outlier_removal.py
 # @Purpose : Point cloud outlier detection and removal utilities
 
