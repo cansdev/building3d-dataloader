@@ -5,6 +5,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from utils.cuda_utils import to_cuda, print_gpu_memory
 from models.dgcnn_model import BasicDGCNN
 
@@ -30,15 +31,15 @@ def train_on_real_dataset(train_loader, device):
     model = BasicDGCNN(input_dim=5, k=20, max_vertices=64)
     model = model.to(device)
     
-    # Optimizer - FIXED LR for overfitting (no scheduler that kills learning!)
-    # LOWERED LR for stability with single sample (0.001 → 0.0001 based on analysis)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)  # Reduced LR and weight decay
+    # Optimizer with Tanh output normalization for stability
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-3)
     
-    # Improved loss functions
-    # Use Huber loss (SmoothL1) to prevent gradient explosion from large initial errors
-    # Delta=0.1 means: use L2 for errors < 0.1m, L1 for errors > 0.1m
-    coord_loss_fn = nn.HuberLoss(delta=0.1)  # Robust to outliers, strong gradients for small errors
-    existence_loss_fn = nn.BCEWithLogitsLoss()  # Per-vertex existence loss (better than global count!)
+    # Learning rate scheduler: cosine annealing from 0.001 to 0.00001
+    scheduler = CosineAnnealingLR(optimizer, T_max=1000, eta_min=1e-5)
+    
+    # Loss functions
+    coord_loss_fn = nn.MSELoss()
+    existence_loss_fn = nn.BCEWithLogitsLoss()
     
     print(f"DGCNN model loaded with {sum(p.numel() for p in model.parameters()):,} parameters")
     
@@ -68,11 +69,11 @@ def train_on_real_dataset(train_loader, device):
                 break
     
     if len(collected_samples) < 4:
-        print(f"❌ Could not find all 4 samples! Found: {list(collected_samples.keys())}")
+        print(f"Could not find all 4 samples! Found: {list(collected_samples.keys())}")
         return {'error': f'Only found {len(collected_samples)} samples: {list(collected_samples.keys())}'}
     
     # Now build the training batch from collected samples
-    print(f"✅ Found all 4 samples: {list(collected_samples.keys())}")
+    print(f"Found all 4 samples: {list(collected_samples.keys())}")
     
     # Extract and stack all samples in order
     training_batch = {}
@@ -159,8 +160,7 @@ def train_on_real_dataset(train_loader, device):
     else:
         print(f"   WARNING: No normalization metadata found! Errors reported in raw coordinates.")
     
-    # CRITICAL FIX: Filter out padded vertices (padded with -10 by collate_batch)
-    # Process EACH sample in the batch separately
+    # Filter out padded vertices (padded with -10 by collate_batch)
     B = points.shape[0]  # Batch size = 12
     valid_vertices_list = []
     num_vertices_list = []
@@ -176,7 +176,7 @@ def train_on_real_dataset(train_loader, device):
         
         # Only print details for first 2 and last sample to reduce clutter
         if i < 2 or i == B - 1:
-            print(f"   Sample {i+1}: ✅ Filtered padding: {V_i} REAL vertices (removed {vertices_gt.shape[1] - V_i} padded)")
+            print(f"   Sample {i+1}: Filtered padding: {V_i} REAL vertices (removed {vertices_gt.shape[1] - V_i} padded)")
             print(f"     Vertex coordinate ranges: X=[{valid_vertices_i[:, 0].min().item():.3f}, {valid_vertices_i[:, 0].max().item():.3f}] Y=[{valid_vertices_i[:, 1].min().item():.3f}, {valid_vertices_i[:, 1].max().item():.3f}] Z=[{valid_vertices_i[:, 2].min().item():.3f}, {valid_vertices_i[:, 2].max().item():.3f}]")
         elif i == 2:
             print(f"   ... (samples 3-{B} details omitted for brevity) ...")
@@ -208,21 +208,26 @@ def train_on_real_dataset(train_loader, device):
     
     # Training loop for OVERFITTING ON SINGLE SAMPLE
     model.train()
-    num_epochs = 2000  # More epochs needed with lower LR for stable convergence
+    num_epochs = 1000  # Faster convergence with fixed architecture issues
     
-    print(f"Starting OVERFITTING training for {num_epochs} epochs...")
-    print(f"Goal: Achieve < 10mm real-world error on SINGLE sample (perfect overfit)")
-    print(f"Strategy: Low LR (0.0001) + Long training (5000 epochs) for stable convergence")
+    print(f"Starting training for {num_epochs} epochs...")
+    print(f"Goal: Generalization to unseen buildings with data augmentation")
+    print(f"Strategy:")
+    print(f"  Data Augmentation ENABLED (rotation, scale, jitter)")
+    print(f"  Tanh output normalization + MSE loss")
+    print(f"  Balanced loss weighting (10×coord, 1×exist)")
+    print(f"  Learning rate scheduling (0.001 → 0.00001)")
+    print(f"  Weight decay (L2) = 0.001")
+    print(f"Architecture: 80K params, Dropout=0.3")
     if max_distance:
-        print(f"Target: < 0.01m real = < {0.01/max_distance:.4f} normalized error")
+        print(f"Target: < 0.5m real error (generalization), not just memorization")
     
     best_loss = float('inf')
     best_vertex_error = float('inf')
     
-    # Adaptive loss weighting - Aggressive for single sample
-    # Single sample can handle much stronger coordinate focus
-    base_coord_weight = 50.0  # Higher for single sample (was 30.0)
-    base_existence_weight = 1.0  # Existence prediction weight
+    # Loss weighting
+    coord_weight = 10.0
+    existence_weight = 1.0
     
     for epoch in range(num_epochs):
         # Set epoch for deterministic-but-varying random sampling
@@ -262,14 +267,7 @@ def train_on_real_dataset(train_loader, device):
             coord_losses.append(coord_loss_i)
         coord_loss = torch.stack(coord_losses).mean()
         
-        # Adaptive loss weighting - MODERATE for single sample (50→100 for stability)
-        progress = epoch / num_epochs
-        # Coordinates: Start at 50.0, increase to 100.0 (less aggressive for stability)
-        coord_weight = base_coord_weight * (1.0 + 1.0 * progress)  # 50.0 → 100.0
-        # Existence: Start at 1.0, decrease to 0.5 (gentler)
-        existence_weight = base_existence_weight * (1.0 - 0.5 * progress)  # 1.0 → 0.5
-        
-        # Combined loss with adaptive weighting
+        # Combined loss with fixed balanced weighting (no adaptation needed with proper normalization)
         total_loss = coord_weight * coord_loss + existence_weight * existence_loss
         
         # Backward pass
@@ -279,8 +277,7 @@ def train_on_real_dataset(train_loader, device):
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Standard clipping for stability
         
         optimizer.step()
-        
-        # No learning rate scheduler - using fixed LR for overfitting!
+        scheduler.step()
         
         # Track best model
         if total_loss.item() < best_loss:
@@ -305,12 +302,12 @@ def train_on_real_dataset(train_loader, device):
                     fake_exist_prob = existence_probs[i, V_i:].mean().item() if V_i < model.max_vertices else 0.0
                     
                     vertex_dist_i = torch.norm(pred_vertices[i:i+1, :V_i, :] - vertices_gt_padded[i:i+1, :V_i, :], dim=2)
-                    mean_error_norm = vertex_dist_i.mean().item()  # Normalized space error
+                    mean_error_norm = vertex_dist_i.mean().item()
                     
-                    # CRITICAL FIX: Convert to REAL-WORLD error in meters
+                    # Convert to real-world error in meters
                     if max_distance is not None:
                         mean_error_world = mean_error_norm * max_distance
-                        # Use REAL threshold: 50mm in world space, not normalized!
+                        # Use real threshold: 50mm in world space
                         threshold_norm = 0.05 / max_distance  # 0.05m = 50mm in normalized space
                         accurate_i = torch.sum(vertex_dist_i < threshold_norm).item()
                     else:
@@ -367,14 +364,14 @@ def train_on_real_dataset(train_loader, device):
                 if max_distance and (epoch + 1) % 50 == 0:
                     print(f"  " + "="*60)
                     if mean_vertex_error_world > 0.5:
-                        print(f"  [!] WARNING: Error still > 0.5m after {epoch+1} epochs")
+                        print(f"  WARNING: Error still > 0.5m after {epoch+1} epochs")
                         print(f"  Consider: More epochs or check data quality")
                     elif mean_vertex_error_world > 0.1:
-                        print(f"  [~] Progress: Error {mean_vertex_error_world*1000:.0f}mm (target: <10mm)")
+                        print(f"  Progress: Error {mean_vertex_error_world*1000:.0f}mm (target: <10mm)")
                     elif mean_vertex_error_world > 0.01:
-                        print(f"  [+] Good progress! Error {mean_vertex_error_world*1000:.0f}mm (almost perfect!)")
+                        print(f"  Good progress! Error {mean_vertex_error_world*1000:.0f}mm (almost perfect!)")
                     else:
-                        print(f"  [✓✓✓] PERFECT OVERFIT! Error {mean_vertex_error_world*1000:.0f}mm < 10mm target!")
+                        print(f"  PERFECT OVERFIT! Error {mean_vertex_error_world*1000:.0f}mm < 10mm target!")
                     print(f"  " + "="*60)
                 
     # Final evaluation with detailed per-sample analysis
@@ -418,7 +415,7 @@ def train_on_real_dataset(train_loader, device):
             print(f"  Accurate vertices (<5cm): {accurate_vertices}/{V_i} ({100*accurate_vertices/V_i:.1f}%)")
     
     print("\n" + "="*60)
-    print(f"🎉 Training complete!")
+    print(f"Training complete!")
     print(f"   Best vertex error achieved: {best_vertex_error:.6f}")
     print("="*60)
     

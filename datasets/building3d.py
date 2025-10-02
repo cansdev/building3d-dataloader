@@ -171,16 +171,26 @@ class Building3DReconstructionDataset(Dataset):
         # Only augment during training, not testing
         if self.augment and self.split_set == 'train':
             
-            rot_angle = np.random.uniform(-np.pi, np.pi)  # ±180°
+            # 1. Random Z-axis rotation (±180°)
+            rot_angle = np.random.uniform(-np.pi, np.pi)
             rot_mat = rotz(rot_angle)
-            
             point_cloud[:, 0:3] = np.dot(point_cloud[:, 0:3], np.transpose(rot_mat))
             wf_vertices[:, 0:3] = np.dot(wf_vertices[:, 0:3], np.transpose(rot_mat))
             
-            # Uniform scaling (0.95 to 1.05) - applied to BOTH points and vertices
+            # 2. Uniform scaling (0.95 to 1.05)
             scale = np.random.uniform(0.95, 1.05)
             point_cloud[:, 0:3] *= scale
             wf_vertices[:, 0:3] *= scale
+            
+            # 3. Jittering - small random noise for robustness
+            # Helps model learn to handle noisy LiDAR data
+            noise_std = 0.001  # 2mm std dev noise
+            point_noise = np.random.normal(0, noise_std, point_cloud[:, 0:3].shape)
+            point_cloud[:, 0:3] += point_noise
+            
+            # 4. Tiny noise to vertices (prevents exact memorization)
+            vertex_noise = np.random.normal(0, noise_std * 0.5, wf_vertices[:, 0:3].shape)
+            wf_vertices[:, 0:3] += vertex_noise
             
             # Note: GroupID (column 3) and BorderWeight (column 4) remain unchanged
             # Note: Normalization metadata will be recomputed below if needed

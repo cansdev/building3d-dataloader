@@ -516,8 +516,8 @@ def validate_point_cloud_quality(points, verbose=True):
         print(f"Aspect ratios (X:Y:Z): {aspect_ratios[0]:.2f}:{aspect_ratios[1]:.2f}:{aspect_ratios[2]:.2f}")
         
         if quality_metrics['is_roughly_cubic']:
-            print("✅ Good aspect ratios - no overly thin dimensions")
+            print("Good aspect ratios - no overly thin dimensions")
         else:
-            print("⚠️  Warning: Point cloud has very thin dimensions")
+            print("Warning: Point cloud has very thin dimensions")
     
     return quality_metrics

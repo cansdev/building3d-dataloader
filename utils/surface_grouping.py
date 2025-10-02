@@ -821,9 +821,9 @@ def get_surface_specific_parameters(surface_type):
         return {
             'outlier_removal': {
                 'stat_k': 12,
-                'stat_std_ratio': 3.5,  # More conservative (was 2.0)
+                'stat_std_ratio': 3.5,
                 'radius_threshold': 0.03,
-                'radius_min_neighbors': 2,  # More lenient (was 3)
+                'radius_min_neighbors': 2,
                 'auto_scale_radius_param': True
             },
             'normal_computation': {

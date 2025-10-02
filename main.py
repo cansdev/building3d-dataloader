@@ -86,7 +86,7 @@ def main():
         if 'model' in training_data:
             model_save_path = 'trained_dgcnn_model.pth'
             torch.save(training_data['model'].state_dict(), model_save_path)
-            print(f"\n💾 Trained model saved to: {model_save_path}")
+            print(f"\nTrained model saved to: {model_save_path}")
 
         print("\n" + "=" * 60)
         print("Training setup complete")

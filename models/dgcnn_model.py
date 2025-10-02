@@ -6,13 +6,72 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def knn(x, k):
+    """
+    Find k-nearest neighbors for each point.
+    
+    Args:
+        x: [B, N, C] - point features or coordinates
+        k: int - number of nearest neighbors
+    
+    Returns:
+        idx: [B, N, k] - indices of k nearest neighbors for each point
+    """
+    # Compute pairwise distance
+    inner = -2 * torch.matmul(x, x.transpose(2, 1))  # [B, N, N]
+    xx = torch.sum(x**2, dim=2, keepdim=True)  # [B, N, 1]
+    pairwise_distance = -xx - inner - xx.transpose(2, 1)  # [B, N, N] (negative for sorting)
+    
+    # Get k nearest neighbors (including self)
+    idx = pairwise_distance.topk(k=k, dim=-1)[1]  # [B, N, k]
+    return idx
+
+
+def get_graph_feature(x, k=20, idx=None):
+    """
+    Construct edge features for EdgeConv.
+    
+    For each point, gather its k nearest neighbors and compute edge features:
+    edge_feature = [point_feature, neighbor_feature - point_feature]
+    
+    Args:
+        x: [B, N, C] - point features
+        k: int - number of nearest neighbors
+        idx: [B, N, k] - precomputed neighbor indices (optional)
+    
+    Returns:
+        edge_features: [B, N, k, 2*C] - features for each edge
+    """
+    B, N, C = x.shape
+    device = x.device
+    
+    # Find k nearest neighbors if not provided
+    if idx is None:
+        idx = knn(x, k=k)  # [B, N, k]
+    
+    # Create batch indices for gathering
+    batch_idx = torch.arange(B, device=device).view(B, 1, 1).expand(B, N, k)
+    
+    # Gather neighbor features
+    neighbors = x[batch_idx, idx, :]  # [B, N, k, C]
+    
+    # Compute edge features
+    x_expanded = x.unsqueeze(2).expand(B, N, k, C)  # [B, N, k, C]
+    edge_features = torch.cat([
+        x_expanded,                    # [B, N, k, C] - center point feature
+        neighbors - x_expanded         # [B, N, k, C] - relative neighbor feature
+    ], dim=3)  # [B, N, k, 2*C]
+    
+    return edge_features
+
+
 def compute_pca_alignment(coords, return_transform=True):
     """
-    Compute PCA-based canonical orientation for point cloud with CONSISTENT orientation.
+    Compute PCA-based canonical orientation for point cloud with consistent orientation.
     This makes the model rotation-invariant by aligning to principal axes.
     
-    CRITICAL FIX: Enforce deterministic eigenvector directions to avoid sign ambiguity!
-    - Each axis points toward the side with MORE mass (more points)
+    Enforce deterministic eigenvector directions to avoid sign ambiguity:
+    - Each axis points toward the side with more mass (more points)
     - This ensures the same canonical orientation regardless of input rotation
     
     Args:
@@ -21,7 +80,7 @@ def compute_pca_alignment(coords, return_transform=True):
     
     Returns:
         aligned_coords: [B, N, 3] coordinates aligned to principal axes
-        pca_features: [B, 9] rotation-invariant features (eigenvalues + extents)
+        pca_features: [B, 6] rotation-invariant features (eigenvalues + extents)
         rotation_matrix: [B, 3, 3] rotation to apply to predictions (optional)
     """
     B, N, _ = coords.shape
@@ -50,9 +109,8 @@ def compute_pca_alignment(coords, return_transform=True):
         if flip_mask.any():
             eigenvectors[flip_mask, :, 2] *= -1
         
-        # ===== CRITICAL FIX: DETERMINISTIC EIGENVECTOR ORIENTATION =====
+        # Deterministic eigenvector orientation
         # Flip each eigenvector so it points toward the "heavier" side
-        # This resolves the +/- sign ambiguity in PCA!
         for b in range(B):
             for axis in range(3):
                 # Project points onto this eigenvector
@@ -80,11 +138,11 @@ def compute_pca_alignment(coords, return_transform=True):
         extents_size = extents_max - extents_min  # [B, 3]
         
         # Combine into rotation-invariant feature vector
+        # NOTE: Centroid removed - it's NOT rotation-invariant!
         pca_features = torch.cat([
             eigen_normalized,  # 3 - normalized eigenvalues (shape descriptor)
             extents_size,      # 3 - extents along principal axes
-            centroid.squeeze(1) # 3 - center position (this WILL rotate, but needed for position)
-        ], dim=1)  # [B, 9]
+        ], dim=1)  # [B, 6]
         
         if return_transform:
             return aligned, pca_features, eigenvectors, centroid
@@ -98,143 +156,213 @@ def compute_pca_alignment(coords, return_transform=True):
         pca_features = torch.cat([
             torch.ones(B, 3, device=device) / 3,  # uniform eigenvalues
             torch.ones(B, 3, device=device),       # unit extents
-            centroid.squeeze(1)                    # centroid
-        ], dim=1)
+        ], dim=1)  # [B, 6] - no centroid
         if return_transform:
             return centered, pca_features, identity, centroid
         else:
             return centered, pca_features
 
 
+class EdgeConv(nn.Module):
+    """
+    Edge Convolution layer (core of DGCNN).
+    
+    For each point:
+    1. Find k nearest neighbors in feature space
+    2. Compute edge features: [point_feat, neighbor_feat - point_feat]
+    3. Apply shared MLP to all edges
+    4. Aggregate with max pooling
+    
+    This captures local geometric structure!
+    """
+    def __init__(self, in_channels, out_channels, k=20):
+        super().__init__()
+        self.k = k
+        
+        # Shared MLP for edge features (processes 2*in_channels because of concatenation)
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels * 2, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.LeakyReLU(negative_slope=0.2)
+        )
+    
+    def forward(self, x):
+        """
+        Args:
+            x: [B, C, N] - point features (channels first for conv)
+        
+        Returns:
+            out: [B, C', N] - aggregated edge features
+        """
+        # Transpose to [B, N, C] for k-NN computation
+        x_transposed = x.transpose(2, 1)  # [B, N, C]
+        
+        # Get edge features
+        edge_features = get_graph_feature(x_transposed, k=self.k)  # [B, N, k, 2*C]
+        
+        # Permute to [B, 2*C, N, k] for Conv2d
+        edge_features = edge_features.permute(0, 3, 1, 2)  # [B, 2*C, N, k]
+        
+        # Apply edge convolution
+        edge_features = self.conv(edge_features)  # [B, C', N, k]
+        
+        # Aggregate across neighbors (max pooling)
+        out = edge_features.max(dim=-1)[0]  # [B, C', N]
+        
+        return out
+
+
 class BasicDGCNN(nn.Module):
     """
-    SIMPLE point cloud to vertices model.
-    No edge convolutions, no attention, no complex operations.
-    Just: Point features → Global pooling → MLP → Vertex predictions
+    Dynamic Graph CNN for point cloud to vertices prediction.
+    
+    TRUE DGCNN architecture with:
+    - Multiple EdgeConv layers (dynamic graph construction)
+    - k-NN in feature space (graphs rebuilt at each layer)
+    - Local geometric feature learning
+    - PCA alignment for rotation invariance
     
     Input: [B, N, 5] - XYZ + GroupID + BorderWeight
     Output: [B, max_vertices, 4] - XYZ + existence per vertex
     
     Architecture:
-    1. Simple per-point MLPs to extract features
-    2. Max pooling to get global features
-    3. MLP decoder to predict all vertices
+    1. EdgeConv layers (extract local + global features)
+    2. Global aggregation (max + avg pooling)
+    3. MLP decoder (predict all vertices)
     """
     def __init__(self, input_dim=5, k=20, max_vertices=64):
         super().__init__()
         
         self.input_dim = input_dim
+        self.k = k
         self.max_vertices = max_vertices
         
-        # Simple point-wise feature extraction (no neighbors, no graphs)
-        # Process ONLY semantic features (GroupID + BorderWeight), NOT coordinates!
-        # This prevents rotation-invariant feature learning
-        self.point_mlp = nn.Sequential(
-            nn.Linear(2, 32),  # Input: GroupID + BorderWeight (NOT XYZ!)
-            nn.ReLU(),
-            nn.Linear(32, 64),
-            nn.ReLU(),
+        # EdgeConv layers
+        self.edge_conv1 = EdgeConv(5, 32, k=k)
+        self.edge_conv2 = EdgeConv(32, 64, k=k)
+        
+        # Residual/shortcut connection for layer 2
+        self.shortcut2 = nn.Sequential(
+            nn.Conv1d(32, 64, kernel_size=1, bias=False),
+            nn.BatchNorm1d(64)
         )
         
-        # Global aggregation (max pooling across all points)
-        # 201 global features (192 learned + 9 PCA-based rotation-invariant features)
+        # Optional: Additional point-wise feature transformation
+        self.conv_post = nn.Sequential(
+            nn.Conv1d(96, 96, kernel_size=1, bias=False),  # 32+64=96 concatenated features
+            nn.BatchNorm1d(96),
+            nn.LeakyReLU(negative_slope=0.2),
+        )
         
-        # Vertex decoder - predict all vertices from global features
+        # Global aggregation
+        # 198 global features (96 max + 96 avg + 6 PCA features)
+        
+        # Vertex decoder - SIMPLIFIED for small dataset
         self.vertex_decoder = nn.Sequential(
-            nn.Linear(201, 256),  # Input: 201 features (192 learned + 9 PCA features)
-            nn.ReLU(),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Linear(128, max_vertices * 4)  # 4 outputs per vertex (x,y,z,existence)
+            nn.Linear(198, 128),                    # Reduced from 518→512
+            nn.BatchNorm1d(128),
+            nn.LeakyReLU(negative_slope=0.2),
+            nn.Dropout(0.3),                         # Increased dropout
+            nn.Linear(128, max_vertices * 4),        # Direct to output
+            nn.Tanh()
         )
         
-        # Initialize biases
-        # Set existence logits to slightly negative (start by predicting "not exist")
+        # Initialize biases - balanced for learning
+        # Bias -1.0 → sigmoid(-1) ≈ 0.27 (27% probability - reasonable for 32/64 occupancy)
         with torch.no_grad():
-            final_layer = self.vertex_decoder[-1]
+            final_layer = self.vertex_decoder[-2] 
             for i in range(max_vertices):
-                final_layer.bias[i * 4 + 3] = -2.0  # Existence logit starts negative
+                final_layer.bias[i * 4 + 3] = -1.0  
         
     def forward(self, x):
         """
-        Forward pass with PCA-based rotation-invariant learning.
+        Forward pass with DGCNN + PCA-based rotation invariance.
         
-        The key insight: Learn shape in canonical (PCA-aligned) space,
-        then transform predictions back to original orientation.
+        Key features:
+        - PCA alignment for canonical orientation
+        - Dynamic graph construction at each EdgeConv layer
+        - Hierarchical feature learning (local → global)
+        - Multi-scale feature aggregation
         
         Args:
             x: [B, N, D] input point features (B=batch, N=points, D=features)
                D=5: XYZ coordinates + GroupID + BorderWeight
         
         Returns:
-            dict with predictions in ORIGINAL orientation
+            dict with predictions in canonical orientation
         """
         B, N, D = x.shape
         
-        # CRITICAL FIX: Keep XYZ separate from learned features!
+        # Separate coordinates from semantic features
         coords = x[:, :, :3]  # [B, N, 3] - Raw XYZ coordinates
         semantic_features = x[:, :, 3:]  # [B, N, 2] - GroupID + BorderWeight
         
-        # ===== ROTATION-INVARIANT PROCESSING =====
-        # Step 1: Align point cloud to canonical orientation (PCA axes)
+        # ===== STEP 1: PCA ALIGNMENT (Rotation Invariance) =====
         aligned_coords, pca_features, rotation_matrix, centroid = compute_pca_alignment(
             coords, return_transform=True
         )
         # aligned_coords: [B, N, 3] - coordinates in canonical space
-        # pca_features: [B, 9] - rotation-invariant shape descriptors
-        # rotation_matrix: [B, 3, 3] - rotation from original to canonical
-        # centroid: [B, 1, 3] - center of point cloud
+        # pca_features: [B, 6] - rotation-invariant shape descriptors
         
-        # Step 2: Extract features ONLY from semantic info (NOT coordinates!)
-        point_features = self.point_mlp(semantic_features)  # [B, N, 64]
+        # ===== STEP 2: DGCNN FEATURE EXTRACTION =====
+        # Combine PCA-aligned coordinates with semantic features
+        # This allows EdgeConv to see BOTH spatial structure AND semantic attributes
+        combined_features = torch.cat([
+            aligned_coords,      # [B, N, 3] - geometry in canonical space (rotation-invariant!)
+            semantic_features    # [B, N, 2] - semantic attributes (GroupID + BorderWeight)
+        ], dim=2)  # [B, N, 5]
         
-        # Step 3: Aggregate learned features (rotation-invariant pooling)
-        max_features = torch.max(point_features, dim=1)[0]  # [B, 64]
-        avg_features = torch.mean(point_features, dim=1)     # [B, 64]
-        std_features = torch.std(point_features, dim=1)      # [B, 64]
+        # Transpose to [B, C, N] for convolution operations
+        features = combined_features.transpose(1, 2)  # [B, 5, N]
         
-        # Step 4: Combine rotation-invariant features
-        # - Learned features (64+64+64 = 192): describe structure
-        # - PCA features (9): describe shape & orientation
+        # EdgeConv 1: Build graph in combined spatial+semantic space
+        feat1 = self.edge_conv1(features)  # [B, 32, N]
+        
+        # EdgeConv 2: Build graph in learned 32-D feature space (dynamic!) + residual
+        feat2 = self.edge_conv2(feat1) + self.shortcut2(feat1)  # [B, 64, N] with residual
+        
+        # ===== STEP 3: MULTI-SCALE FEATURE AGGREGATION =====
+        # Concatenate features from both levels (skip connections)
+        multi_scale_features = torch.cat([feat1, feat2], dim=1)  # [B, 96, N]
+        
+        # Apply additional transformation
+        features_transformed = self.conv_post(multi_scale_features)  # [B, 96, N]
+        
+        # ===== STEP 4: GLOBAL AGGREGATION =====
+        # Pool features across all points
+        max_features = torch.max(features_transformed, dim=2)[0]  # [B, 96]
+        avg_features = torch.mean(features_transformed, dim=2)     # [B, 96]
+        
+        # Combine with PCA features
         global_features = torch.cat([
-            max_features,     # 64 - semantic structure (rotation-invariant)
-            avg_features,     # 64 - feature distribution
-            std_features,     # 64 - feature variance
-            pca_features,     # 9 - eigenvalues (3) + extents (3) + centroid (3)
-        ], dim=1)  # Total: 192 + 9 = 201 features
+            max_features,     # 96 - strongest local features
+            avg_features,     # 96 - average structure
+            pca_features,     # 6 - rotation-invariant shape descriptors
+        ], dim=1)  # Total: 96 + 96 + 6 = 198 features
         
-        # Step 5: Decode vertices in CANONICAL space
+        # ===== STEP 5: VERTEX PREDICTION IN CANONICAL SPACE =====
         vertex_output = self.vertex_decoder(global_features)  # [B, max_vertices * 4]
         vertex_output = vertex_output.view(B, self.max_vertices, 4)
         
         vertex_coords_canonical = vertex_output[:, :, :3]  # [B, max_vertices, 3]
         existence_logits = vertex_output[:, :, 3]           # [B, max_vertices]
         
-        # ===== KEEP PREDICTIONS IN CANONICAL SPACE =====
-        # Instead of rotating back to input orientation, we keep predictions in canonical space.
-        # This ensures training and visualization both compare in the SAME coordinate system.
-
-        # Logic:
-        # - Training: GT is transformed to canonical → compare with canonical predictions
-        # - Visualization: GT is transformed to canonical → compare with canonical predictions
-        # - Augmentation: Different rotations → SAME canonical space (deterministic PCA)
-        
-        # Step 6: Existence probabilities
+        # ===== STEP 6: EXISTENCE PROBABILITIES =====
         existence_probs = torch.sigmoid(existence_logits)
         vertex_exists = existence_probs > 0.5
         num_vertices = vertex_exists.sum(dim=1)
         num_vertices = torch.clamp(num_vertices, min=1, max=self.max_vertices)
         
         return {
-            'vertex_coords': vertex_coords_canonical,          # [B, max_vertices, 3] - PRIMARY OUTPUT (canonical space)
+            'vertex_coords': vertex_coords_canonical,          # [B, max_vertices, 3] - PRIMARY OUTPUT
             'vertex_coords_canonical': vertex_coords_canonical, # [B, max_vertices, 3] - same as above
             'existence_logits': existence_logits,              # [B, max_vertices]
             'existence_probs': existence_probs,                # [B, max_vertices]
             'num_vertices': num_vertices,                      # [B]
-            'global_features': global_features,                # [B, 201]
-            'point_features': point_features,                  # [B, N, 64]
-            'pca_features': pca_features,                      # [B, 9]
-            'rotation_matrix': rotation_matrix,                # [B, 3, 3] - can be used to transform back if needed
-            'centroid': centroid,                              # [B, 1, 3] - can be used to transform back if needed
+            'global_features': global_features,                # [B, 198]
+            'multi_scale_features': features_transformed,      # [B, 96, N]
+            'pca_features': pca_features,                      # [B, 6]
+            'rotation_matrix': rotation_matrix,                # [B, 3, 3]
+            'centroid': centroid,                              # [B, 1, 3]
             'aligned_coords': aligned_coords,                  # [B, N, 3] - for debugging
         }

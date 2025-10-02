@@ -70,9 +70,9 @@ def color_points_by_border_weights(points, border_weights=None, colormap='coolwa
     total = len(border_weights)
     
     print(f"\n=== Border Weight Statistics ===")
-    print(f"🔵 Low border weights (≤0.3): {low_border} points ({100*low_border/total:.1f}%)")
-    print(f"🟡 Medium border weights (0.3-0.7): {medium_border} points ({100*medium_border/total:.1f}%)")
-    print(f"🔴 High border weights (>0.7): {high_border} points ({100*high_border/total:.1f}%)")
+    print(f"Low border weights (≤0.3): {low_border} points ({100*low_border/total:.1f}%)")
+    print(f"Medium border weights (0.3-0.7): {medium_border} points ({100*medium_border/total:.1f}%)")
+    print(f"High border weights (>0.7): {high_border} points ({100*high_border/total:.1f}%)")
     
     return colors[:, :3]  # Return only RGB, not alpha
 
@@ -300,7 +300,7 @@ def visualize_comparison_matplotlib(point_cloud, gt_vertices, pred_vertices, gt_
             threshold_norm = 0.05 / max_distance  # 50mm threshold in normalized space
             accurate_count = np.sum(closest_distances < threshold_norm)
             
-            print(f"\n📊 Vertex Prediction Accuracy:")
+            print(f"\nVertex Prediction Accuracy:")
             print(f"   Mean error (normalized): {mean_error_norm:.4f}")
             print(f"   Mean error (real-world): {mean_error_world:.4f}m ({mean_error_world*1000:.0f}mm)")
             print(f"   Max error (real-world): {max_error_world:.4f}m ({max_error_world*1000:.0f}mm)")
@@ -311,7 +311,7 @@ def visualize_comparison_matplotlib(point_cloud, gt_vertices, pred_vertices, gt_
                          f"Max Error: {max_error_world:.4f}m ({max_error_world*1000:.0f}mm)\n"
                          f"Accurate (<50mm): {accurate_count}/{len(gt_vertices)}")
         else:
-            print(f"\n📊 Vertex Prediction Accuracy (normalized):")
+            print(f"\nVertex Prediction Accuracy (normalized):")
             print(f"   Mean error: {mean_error_norm:.4f}")
             print(f"   Max error: {max_error_norm:.4f}")
             print(f"   Vertices within 0.1 units: {np.sum(closest_distances < 0.1)}/{len(gt_vertices)}")
@@ -326,11 +326,11 @@ def visualize_comparison_matplotlib(point_cloud, gt_vertices, pred_vertices, gt_
     plt.tight_layout()
     plt.show()
     
-    print(f"\n🔴 Red circles: Ground truth vertices ({len(gt_vertices)})")
-    print(f"🟢 Green triangles: Predicted vertices ({len(pred_vertices)})")
+    print(f"\nRed circles: Ground truth vertices ({len(gt_vertices)})")
+    print(f"Green triangles: Predicted vertices ({len(pred_vertices)})")
     if gt_edges is not None:
-        print(f"🔴 Red lines: Ground truth wireframe ({len(gt_edges)} edges)")
-    print(f"💙 Light blue points: Original point cloud")
+        print(f"Red lines: Ground truth wireframe ({len(gt_edges)} edges)")
+    print(f"Light blue points: Original point cloud")
     
     return fig, ax
 
@@ -347,9 +347,9 @@ def load_trained_model(model_path=None, input_dim=5, k=20, device=None):
     
     if model_path and os.path.exists(model_path):
         model.load_state_dict(torch.load(model_path, map_location=device))
-        print(f"✅ Loaded trained model from {model_path}")
+        print(f"Loaded trained model from {model_path}")
     else:
-        print("⚠️ No saved model found, using randomly initialized model")
+        print("Warning: No saved model found, using randomly initialized model")
     
     model = model.to(device)
     model.eval()
@@ -409,12 +409,12 @@ def get_sample_data(sample_id=1, use_test_split=True):
                 else:
                     sample[key] = value
             
-            print(f"🎯 Found sample {sample_id} in batch {batch_idx + 1}")
+            print(f"Found sample {sample_id} in batch {batch_idx + 1}")
             print(f"   Augmentation was: {'ENABLED' if original_augment else 'DISABLED'} in config")
             print(f"   Visualization: Showing ORIGINAL (non-augmented) data")
             return sample
     
-    print(f"❌ Sample {sample_id} not found")
+    print(f"Sample {sample_id} not found")
     return None
 
 def predict_vertices_with_model(model, point_cloud, device, max_vertices=50):
@@ -441,7 +441,7 @@ def predict_vertices_with_model(model, point_cloud, device, max_vertices=50):
             top_k_indices = existence_probs.argsort()[::-1][:num_vertices]
             predicted_vertices = vertex_coords[top_k_indices]
         
-        print(f"📊 Model predicted {len(predicted_vertices)} vertices")
+        print(f"Model predicted {len(predicted_vertices)} vertices")
         print(f"   Existence probabilities: min={existence_probs.min():.3f}, max={existence_probs.max():.3f}, mean={existence_probs.mean():.3f}")
         print(f"   Vertices with prob>0.5: {vertex_exists.sum()}")
         print(f"   Vertex coordinate ranges:")
@@ -453,7 +453,7 @@ def predict_vertices_with_model(model, point_cloud, device, max_vertices=50):
 
 def main_visualization_matplotlib(sample_id=1, model_path=None):
     """Main function to run matplotlib-based visualization"""
-    print("🎨 Building3D Wireframe Reconstruction Visualization (Matplotlib)")
+    print("Building3D Wireframe Reconstruction Visualization (Matplotlib)")
     print("=" * 70)
     
     # Load sample data from train split (Sample 1 is in train split)
@@ -479,15 +479,15 @@ def main_visualization_matplotlib(sample_id=1, model_path=None):
     valid_edge_mask = gt_edges_raw[:, 0] > -0.5
     gt_edges = gt_edges_raw[valid_edge_mask]
     
-    print(f"🧹 Filtered padding: {np.sum(valid_vertex_mask)} real vertices (removed {np.sum(~valid_vertex_mask)} padded)")
-    print(f"🧹 Filtered padding: {np.sum(valid_edge_mask)} real edges (removed {np.sum(~valid_edge_mask)} padded)")
+    print(f"Filtered padding: {np.sum(valid_vertex_mask)} real vertices (removed {np.sum(~valid_vertex_mask)} padded)")
+    print(f"Filtered padding: {np.sum(valid_edge_mask)} real edges (removed {np.sum(~valid_edge_mask)} padded)")
     
     # Extract border weights if available
     border_weights = None
     if point_cloud.shape[1] >= 5:
         border_weights = point_cloud[:, 4]  # Last feature is border weight
     
-    print(f"\n📊 Sample {sample_id} Data:")
+    print(f"\nSample {sample_id} Data:")
     print(f"   Point cloud: {point_cloud.shape}")
     print(f"   GT vertices: {gt_vertices.shape}")
     print(f"   GT edges: {gt_edges.shape}")
@@ -530,7 +530,7 @@ def main_visualization_matplotlib(sample_id=1, model_path=None):
     predicted_vertices = predict_vertices_with_model(model, point_cloud, device)
     
     # Visualizations
-    print(f"\n🎨 Starting matplotlib visualizations...")
+    print(f"\nStarting matplotlib visualizations...")
     
     # Comparison: Ground truth vs predicted (ALL IN CANONICAL SPACE)
     print("Ground truth vs predicted vertices (in canonical space)...")
@@ -544,9 +544,9 @@ def main_visualization_matplotlib(sample_id=1, model_path=None):
         max_distance=max_distance
     )
     
-    print("✅ Matplotlib visualization complete!")
+    print("Matplotlib visualization complete!")
 
 if __name__ == "__main__":
     # Run matplotlib-based visualization for sample 1 (from train split)
     # Note: Sample 1 is in train split, so we use use_test_split=False
-    main_visualization_matplotlib(sample_id=1003, model_path=None)
+    main_visualization_matplotlib(sample_id=1004, model_path=None)

@@ -216,11 +216,11 @@ def color_points_by_group_instance(point_cloud):
     try:
         import open3d as o3d
         
-        if point_cloud.shape[1] < 4:  # Adjusted for new structure: XYZ + group_id
+        if point_cloud.shape[1] < 4:
             # No group IDs, fallback to elevation coloring
             return color_points_by_elevation(point_cloud)
         
-        # Group IDs are now in column 3 instead of 6 (since we removed normals)
+        # Group IDs are in column 3
         group_ids = point_cloud[:, 3].astype(int)
         unique_groups = np.unique(group_ids)
         n_groups = len(unique_groups)
@@ -315,9 +315,9 @@ def color_points_by_border_weights(point_cloud, border_weights=None):
         low_border = np.sum(border_weights <= 0.3)
         total = len(point_cloud)
         
-        print(f"🔵 Low border weights (≤0.3): {low_border} points ({100*low_border/total:.1f}%) - Blue")
-        print(f"🟢 Medium border weights (0.3-0.7): {medium_border} points ({100*medium_border/total:.1f}%) - Green")
-        print(f"🔴 High border weights (>0.7): {high_border} points ({100*high_border/total:.1f}%) - Red")
+        print(f"Low border weights (≤0.3): {low_border} points ({100*low_border/total:.1f}%) - Blue")
+        print(f"Medium border weights (0.3-0.7): {medium_border} points ({100*medium_border/total:.1f}%) - Green")
+        print(f"High border weights (>0.7): {high_border} points ({100*high_border/total:.1f}%) - Red")
         
         return colors
         
@@ -340,7 +340,7 @@ def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordina
             if border_colors is not None:
                 pcd.colors = o3d.utility.Vector3dVector(border_colors)
             else:
-                print("⚠️  Border weight calculation failed, using group instance colors")
+                print("Warning: Border weight calculation failed, using group instance colors")
                 color_by_group_instance = True
         elif color_by_group_instance:
             # Color by group instance (second priority)
@@ -348,7 +348,7 @@ def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordina
             if group_colors is not None:
                 pcd.colors = o3d.utility.Vector3dVector(group_colors)
             else:
-                print("⚠️  No group instance data available, using surface type colors")
+                print("Warning: No group instance data available, using surface type colors")
                 color_by_surface_type = True
         elif color_by_surface_type:
             # Color by surface type (third priority)
@@ -356,7 +356,7 @@ def visualize_point_cloud_open3d(point_cloud, title="Point Cloud", show_coordina
             if surface_colors is not None:
                 pcd.colors = o3d.utility.Vector3dVector(surface_colors)
             else:
-                print("⚠️  No surface labels available, using default colors")
+                print("Warning: No surface labels available, using default colors")
         else:
             # Use default coloring for point cloud
             pass
@@ -588,7 +588,7 @@ def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View
             if border_colors is not None:
                 pcd.colors = o3d.utility.Vector3dVector(border_colors)
             else:
-                print("⚠️  Border weight calculation failed, using group instance colors")
+                print("Warning: Border weight calculation failed, using group instance colors")
                 color_by_group_instance = True
         elif color_by_group_instance:
             # Color by group instance (second priority)
@@ -596,19 +596,19 @@ def visualize_combined_open3d(point_cloud, vertices, edges, title="Combined View
             if group_colors is not None:
                 pcd.colors = o3d.utility.Vector3dVector(group_colors)
             else:
-                print("⚠️  No group instance data available, using surface type colors")
+                print("Warning: No group instance data available, using surface type colors")
                 surface_colors = color_points_by_surface_type(point_cloud)
                 if surface_colors is not None:
                     pcd.colors = o3d.utility.Vector3dVector(surface_colors)
                 else:
-                    print("⚠️  No surface labels available, using default colors")
+                    print("Warning: No surface labels available, using default colors")
         elif color_by_surface_type:
             # Color by surface type (third priority)
             surface_colors = color_points_by_surface_type(point_cloud)
             if surface_colors is not None:
                 pcd.colors = o3d.utility.Vector3dVector(surface_colors)
             else:
-                print("⚠️  No surface labels available, using default colors")
+                print("Warning: No surface labels available, using default colors")
         else:
             # Use default coloring
             pass
@@ -782,7 +782,7 @@ def visualize_augmentation_comparison(dataset, sample_idx):
     """
     Visualize augmentation effect - show same sample 4 times with different augmentations
     """
-    print("\n🎨 Visualizing Augmentation Effects")
+    print("\nVisualizing Augmentation Effects")
     print("=" * 60)
     
     # Create figure with 4 subplots (2x2)
@@ -839,7 +839,7 @@ def visualize_augmentation_comparison(dataset, sample_idx):
     
     output_file = 'augmentation_comparison.png'
     plt.savefig(output_file, dpi=150, bbox_inches='tight')
-    print(f"\n✅ Visualization saved to: {output_file}")
+    print(f"\nVisualization saved to: {output_file}")
     print(f"   Each subplot shows the same building with different:")
     print(f"   - Random Z-axis rotation (-180° to +180°)")
     print(f"   - Random scale (±5%)")
