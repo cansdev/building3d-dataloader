@@ -3,6 +3,8 @@ import numpy as np
 from eval.ap_calculator import APCalculator
 from datasets import building3d
 
+## Example to evaluate one sample, taken from Building3D repository
+
 # read point clouds
 pc = np.loadtxt('./datasets/demo_dataset/train/xyz/10.xyz', dtype=np.float64)
 

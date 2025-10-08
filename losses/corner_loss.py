@@ -92,51 +92,6 @@ class DistanceWeightedLoss(nn.Module):
         
         return weighted_loss.mean()
 
-
-class CornerDetectionLoss(nn.Module):
-    """
-    Comprehensive corner detection loss combining focal loss and distance weighting
-    """
-    def __init__(self, focal_alpha=1.0, focal_gamma=2.0, distance_threshold=0.1, 
-                 distance_weight=1.0, weight_factor=2.0):
-        super(CornerDetectionLoss, self).__init__()
-        
-        # Base focal loss
-        self.focal_loss = FocalLoss(alpha=focal_alpha, gamma=focal_gamma)
-        
-        # Distance-weighted loss
-        self.distance_loss = DistanceWeightedLoss(
-            base_loss=self.focal_loss,
-            distance_threshold=distance_threshold,
-            weight_factor=weight_factor
-        )
-        
-        self.distance_weight = distance_weight
-
-    def forward(self, inputs, targets, point_coords, corner_coords):
-        """
-        Args:
-            inputs: [B, N] - predicted corner logits
-            targets: [B, N] - binary corner labels
-            point_coords: [B, N, C] - point cloud coordinates (C can be > 3)
-            corner_coords: [B, M, 3] - ground truth corner coordinates
-        """
-        # Compute focal loss
-        focal_loss = self.focal_loss(inputs, targets)
-        
-        # Compute distance-weighted loss
-        distance_loss = self.distance_loss(inputs, targets, point_coords, corner_coords)
-        
-        # Combine losses
-        total_loss = focal_loss + self.distance_weight * distance_loss
-        
-        return {
-            'total_loss': total_loss,
-            'focal_loss': focal_loss,
-            'distance_loss': distance_loss
-        }
-
-
 class AdaptiveCornerLoss(nn.Module):
     """
     Adaptive corner loss that adjusts focal gamma based on training progress
@@ -248,45 +203,3 @@ def create_corner_labels_improved(point_clouds, wf_vertices, distance_threshold=
     
     return corner_labels
 
-
-def create_corner_labels(point_clouds, wf_vertices, distance_threshold=0.05):
-    """
-    Create corner labels by finding point cloud points closest to wireframe vertices
-    
-    Args:
-        point_clouds: [B, N, C] - point cloud data
-        wf_vertices: [B, M, 3] - wireframe vertices (corners)
-        distance_threshold: maximum distance to consider a point as a corner
-    
-    Returns:
-        corner_labels: [B, N] - binary labels (1 for corner, 0 for non-corner)
-    """
-    B, N, C = point_clouds.shape
-    corner_labels = torch.zeros(B, N, device=point_clouds.device)
-    
-    # Extract XYZ coordinates from point clouds
-    pc_xyz = point_clouds[:, :, :3]  # [B, N, 3]
-    
-    for b in range(B):
-        # Get valid wireframe vertices (not padded with -1e1)
-        valid_mask = wf_vertices[b, :, 0] > -1e0  # Check if not padded
-        valid_wf_vertices = wf_vertices[b, valid_mask]  # [M_valid, 3]
-        
-        if len(valid_wf_vertices) == 0:
-            continue  # No valid wireframe vertices for this batch
-            
-        # Compute distances from each point cloud point to all wireframe vertices
-        pc_points = pc_xyz[b]  # [N, 3]
-        wf_points = valid_wf_vertices  # [M_valid, 3]
-        
-        # Compute pairwise distances: [N, M_valid]
-        distances = torch.cdist(pc_points, wf_points, p=2)
-        
-        # Find minimum distance for each point cloud point
-        min_distances, _ = torch.min(distances, dim=1)  # [N]
-        
-        # Mark points as corners if they're within threshold distance
-        corner_mask = min_distances < distance_threshold
-        corner_labels[b, corner_mask] = 1.0
-    
-    return corner_labels

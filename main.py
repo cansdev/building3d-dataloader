@@ -6,7 +6,7 @@ from datasets import build_dataset
 import yaml
 from easydict import EasyDict
 from torch.utils.data import DataLoader
-from train import train_model, train_model_hungarian
+from train import train_model
 
 def cfg_from_yaml_file(cfg_file):
         with open(cfg_file, 'r') as f:
@@ -49,52 +49,16 @@ def train_with_preprocessed_data():
     model = train_model(train_loader, test_loader, dataset_config)
     return model
 
-def run_visualization():
-    """
-    Run PointNet2 visualization after training
-    """
-    print("\n" + "="*60)
-    print("Training completed! Starting visualization...")
-    print("="*60)
-    
-    try:
-        # Run the visualization script
-        visualize_script = os.path.join('visualize', 'visualize_pointnet2.py')
-        if os.path.exists(visualize_script):
-            print(f"Running {visualize_script}...")
-            subprocess.run([sys.executable, visualize_script], check=True)
-        else:
-            print(f"Warning: Visualization script not found at {visualize_script}")
-    except subprocess.CalledProcessError as e:
-        print(f"Error running visualization: {e}")
-    except Exception as e:
-        print(f"Unexpected error during visualization: {e}")
-
 def main():
     """
-    Main program flow - calls training with preprocessed data, then visualization
+    Main program flow - calls training with preprocessed data
     """
     # Train the model
-    model = train_with_preprocessed_data()
-    
-    # Ask user if they want to run visualization
+    train_with_preprocessed_data()
+
     print("\n" + "="*60)
     print("Training completed successfully!")
     print("="*60)
-    
-    # debugging visualization currently obsolete
-    if False:
-        while True:
-            choice = input("\nDo you want to run PointNet2 visualization? (y/n): ").strip().lower()
-            if choice in ['y', 'yes']:
-                run_visualization()
-                break
-            elif choice in ['n', 'no']:
-                print("Skipping visualization. You can run it later with:")
-                print("python visualize/visualize_pointnet2.py")
-                break
-            else:
-                print("Please enter 'y' for yes or 'n' for no")
 
 if __name__ == "__main__":
     main()

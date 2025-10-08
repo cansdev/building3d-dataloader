@@ -13,7 +13,7 @@ on the Building3D dataset. It shows:
 # =============================================================================
 # HYPERPARAMETERS
 # =============================================================================
-CORNER_THRESHOLD = 0.3  # Threshold for corner predictions (0.0-1.0)
+CORNER_THRESHOLD = 0.2  # Threshold for corner predictions (0.0-1.0)
 # =============================================================================
 
 import os
@@ -28,7 +28,7 @@ import argparse
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from datasets import build_dataset
-from models.PointNet2 import PointNet2CornerDetection, PointNet2CornerDetectionHungarian
+from models.PointNet2 import PointNet2CornerDetection
 import yaml
 from easydict import EasyDict
 
