@@ -4,6 +4,7 @@
 Loss functions for 3D wireframe reconstruction
 """
 
-from .vertex_loss import VertexPredictionLoss
+from .vertex_loss_mse import VertexLossMSE
+from .vertex_loss_hungarian import VertexLossHungarian
 
-__all__ = ['VertexPredictionLoss']
+__all__ = ['VertexLossMSE', 'VertexLossHungarian']

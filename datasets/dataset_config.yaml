@@ -41,7 +41,7 @@ Building3D:
   # Preprocessor Configuration
   preprocessor:
     normalize: True
-    use_outlier_removal: True
+    use_outlier_removal: False
     use_surface_grouping: True
     compute_border_weights: True  
     cache_dir: 'datasets/preprocessed'  # Preprocessed data cache directory
