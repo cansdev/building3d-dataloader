@@ -8,43 +8,56 @@ import numpy as np
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from utils.cuda_utils import to_cuda, print_gpu_memory
 from models.dgcnn_model import BasicDGCNN
+from losses.vertex_loss_mse import VertexLossMSE
+from losses.vertex_loss_hungarian import VertexLossHungarian
 
 def main_training_setup():
     """Setup training configuration"""
     print("Training setup initialized with DGCNN")
     return True
 
-def train_on_real_dataset(train_loader, device):
-    """
-    Train DGCNN model on vertex coordinate prediction with CUDA support.
-    
-    Args:
-        train_loader: DataLoader for training data
-        device: Device to use (cuda or cpu)
-    
-    Returns:
-        dict: Training results
-    """
-    print(f"Training DGCNN for vertex coordinate prediction with {device}")
-    
-    # Initialize DGCNN model for 5 features: X Y Z GroupID BorderWeight
-    model = BasicDGCNN(input_dim=5, k=20, max_vertices=64)
+def train_on_real_dataset(train_loader, device, train_config):
+    # Initialize DGCNN model from config
+    model = BasicDGCNN(
+        input_dim=train_config['model']['input_dim'],
+        k=train_config['model']['k_neighbors'],
+        max_vertices=train_config['model']['max_vertices']
+    )
     model = model.to(device)
     
-    # Optimizer with Tanh output normalization for stability
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-3)
+    # Initialize optimizer from config
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=train_config['optimizer']['lr'],
+        weight_decay=train_config['optimizer']['weight_decay']
+    )
     
-    # Learning rate scheduler: cosine annealing from 0.001 to 0.00001
-    scheduler = CosineAnnealingLR(optimizer, T_max=1000, eta_min=1e-5)
+    # Initialize scheduler from config
+    scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=train_config['scheduler']['T_max'],
+        eta_min=train_config['scheduler']['eta_min']
+    )
     
-    # Loss functions
-    coord_loss_fn = nn.MSELoss()
-    existence_loss_fn = nn.BCEWithLogitsLoss()
+    # Initialize loss function from config
+    use_hungarian = train_config['loss']['use_hungarian']
+    if use_hungarian:
+        print("Using Hungarian matching loss (DETR-style)")
+        criterion = VertexLossHungarian(
+            coord_weight=train_config['loss']['coord_weight'],
+            existence_weight=train_config['loss']['existence_weight']
+        )
+    else:
+        print("Using MSE loss")
+        criterion = VertexLossMSE(
+            coord_weight=train_config['loss']['coord_weight'],
+            existence_weight=train_config['loss']['existence_weight']
+        )
+    criterion = criterion.to(device)
     
     print(f"DGCNN model loaded with {sum(p.numel() for p in model.parameters()):,} parameters")
     
-    # MULTI-SAMPLE TRAINING: Train on 4 samples for better generalization
-    target_samples = [1, 10, 100, 1003]  # Four samples!
+    target_samples = [1, 10, 100, 1003] 
     training_batch = None
     
     # Collect samples from multiple batches
@@ -116,52 +129,14 @@ def train_on_real_dataset(train_loader, device):
     
     # Extract data
     points = training_batch['point_clouds']  # [4, N, 5] - Four samples!
-    vertices_gt_original = training_batch['wf_vertices']  # [4, V_padded, 3] ground truth vertex coordinates (may contain -10 padding)
+    vertices_gt = training_batch['wf_vertices']  # [4, V_padded, 3] ground truth vertex coordinates (may contain -10 padding)
     
     print(f"Training on FOUR SAMPLES: {list(collected_samples.keys())}")
     print(f"   Point clouds: {points.shape}")
-    print(f"   GT vertices (with padding): {vertices_gt_original.shape}")
-    
-    # ===== OPTION 2: Transform GT to canonical space =====
-    # We need to align GT to the same canonical space as predictions
-    from models.dgcnn_model import compute_pca_alignment
-    coords = points[:, :, :3]  # Extract XYZ
-    with torch.no_grad():
-        _, _, rotation_matrix, centroid = compute_pca_alignment(coords, return_transform=True)
-    
-    # Transform GT vertices to canonical space
-    # Remove padding first to avoid transforming invalid vertices
-    B = vertices_gt_original.shape[0]
-    vertices_gt_canonical_list = []
-    for b in range(B):
-        gt_b = vertices_gt_original[b]  # [V_padded, 3]
-        valid_mask = gt_b[:, 0] > -9.0  # Filter padding (-10.0)
-        gt_valid = gt_b[valid_mask]  # [V_real, 3]
-        
-        # Transform to canonical: (gt - centroid) @ rotation_matrix
-        gt_centered = gt_valid - centroid[b]  # [V_real, 3]
-        gt_canonical = torch.matmul(gt_centered, rotation_matrix[b])  # [V_real, 3]
-        
-        # Pad back to original shape
-        gt_padded = torch.full_like(gt_b, -10.0)
-        gt_padded[:gt_canonical.shape[0]] = gt_canonical
-        vertices_gt_canonical_list.append(gt_padded)
-    
-    vertices_gt = torch.stack(vertices_gt_canonical_list, dim=0)  # Now in canonical space!
-    print(f"   GT transformed to canonical space for comparison")
-    
-    # Extract normalization scale factor for REAL error calculation
-    # This is CRITICAL - without it, errors are reported in normalized space!
-    max_distance = None
-    if 'max_distance' in training_batch:
-        max_distance = training_batch['max_distance'][0].item()  # Convert tensor to float
-        print(f"   Normalization scale factor: {max_distance:.2f}m")
-        print(f"   (Errors will be converted: normalized_error × {max_distance:.2f} = real_error)")
-    else:
-        print(f"   WARNING: No normalization metadata found! Errors reported in raw coordinates.")
+    print(f"   GT vertices (with padding): {vertices_gt.shape}")
     
     # Filter out padded vertices (padded with -10 by collate_batch)
-    B = points.shape[0]  # Batch size = 12
+    B = points.shape[0]  # Batch size = 4
     valid_vertices_list = []
     num_vertices_list = []
     
@@ -195,39 +170,11 @@ def train_on_real_dataset(train_loader, device):
             num_vertices_gt[i] = max_vertices
         vertices_gt_padded[i, :V_i, :] = valid_vertices_list[i][:V_i, :]  # Only copy real vertices
     
-    # Extract feature information
-    points_xyz = points[:, :, :3]      # [B, N, 3] - XYZ coordinates
-    group_ids = points[:, :, 3:4]      # [B, N, 1] - Group IDs
-    border_weights = points[:, :, 4:5] # [B, N, 1] - Border weights
-    
-    print(f"   Feature analysis:")
-    print(f"   Point cloud shape: {points.shape}")
-    print(f"   Group IDs range: {group_ids.min():.1f} to {group_ids.max():.1f}")
-    print(f"   Border weights range: {border_weights.min():.3f} to {border_weights.max():.3f}")
-    print(f"   Ground truth vertices: {num_vertices_list}")
-    
-    # Training loop for OVERFITTING ON SINGLE SAMPLE
     model.train()
-    num_epochs = 1000  # Faster convergence with fixed architecture issues
-    
-    print(f"Starting training for {num_epochs} epochs...")
-    print(f"Goal: Generalization to unseen buildings with data augmentation")
-    print(f"Strategy:")
-    print(f"  Data Augmentation ENABLED (rotation, scale, jitter)")
-    print(f"  Tanh output normalization + MSE loss")
-    print(f"  Balanced loss weighting (10×coord, 1×exist)")
-    print(f"  Learning rate scheduling (0.001 → 0.00001)")
-    print(f"  Weight decay (L2) = 0.001")
-    print(f"Architecture: 80K params, Dropout=0.3")
-    if max_distance:
-        print(f"Target: < 0.5m real error (generalization), not just memorization")
+    num_epochs = train_config['num_epochs']
     
     best_loss = float('inf')
     best_vertex_error = float('inf')
-    
-    # Loss weighting
-    coord_weight = 10.0
-    existence_weight = 1.0
     
     for epoch in range(num_epochs):
         # Set epoch for deterministic-but-varying random sampling
@@ -237,9 +184,9 @@ def train_on_real_dataset(train_loader, device):
         
         optimizer.zero_grad()
         
-        # Forward pass
+        # Forward pass - now predicts absolute coordinates directly
         outputs = model(points)
-        pred_vertices = outputs['vertex_coords']        # [B, max_vertices, 3]
+        pred_coords = outputs['vertex_coords']          # [B, max_vertices, 3] - absolute coordinates
         existence_logits = outputs['existence_logits']  # [B, max_vertices] - raw logits
         existence_probs = outputs['existence_probs']    # [B, max_vertices] - sigmoid probabilities
         pred_num_vertices = outputs['num_vertices']     # [B] - dynamic count from threshold
@@ -251,30 +198,30 @@ def train_on_real_dataset(train_loader, device):
             V_i = num_vertices_list[i]
             existence_target[i, :V_i] = 1.0  # First V_i vertices exist
         
-        # Per-vertex existence loss - Each vertex gets its own supervision signal!
-        # This is much better than a single global count loss
-        existence_loss = existence_loss_fn(existence_logits, existence_target)
+        # Prepare predictions and targets for loss computation
+        predictions = {
+            'vertex_offsets': pred_coords,  # Using absolute coords directly
+            'existence_logits': existence_logits,
+            'pc_centroid': torch.zeros(B, 1, 3, device=device)  # Dummy
+        }
         
-        # Coordinate loss - only for existing vertices (masked by ground truth)
-        coord_losses = []
-        for i in range(B):
-            V_i = num_vertices_list[i]
-            # Only compute loss for real vertices (not padding)
-            coord_loss_i = coord_loss_fn(
-                pred_vertices[i:i+1, :V_i, :], 
-                vertices_gt_padded[i:i+1, :V_i, :]
-            )
-            coord_losses.append(coord_loss_i)
-        coord_loss = torch.stack(coord_losses).mean()
+        targets = {
+            'vertices_gt_offsets': vertices_gt_padded,  # Using absolute coords directly
+            'existence_target': existence_target
+        }
         
-        # Combined loss with fixed balanced weighting (no adaptation needed with proper normalization)
-        total_loss = coord_weight * coord_loss + existence_weight * existence_loss
+        # Compute loss using the loss module
+        loss_dict = criterion(predictions, targets, num_vertices_list)
+        
+        total_loss = loss_dict['total_loss']
+        coord_loss = loss_dict['coord_loss']
+        existence_loss = loss_dict['existence_loss']
         
         # Backward pass
         total_loss.backward()
         
-        # Gradient clipping to prevent explosion with stable norm
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Standard clipping for stability
+        # Gradient clipping from config
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=train_config['gradient_clip_norm'])
         
         optimizer.step()
         scheduler.step()
@@ -285,6 +232,9 @@ def train_on_real_dataset(train_loader, device):
 
         if (epoch + 1) % 5 == 0 or epoch < 20:
             with torch.no_grad():
+                # Use predicted absolute coordinates directly
+                pred_vertices_abs = pred_coords  # [B, max_vertices, 3]
+                
                 # Compute metrics for each sample
                 sample_metrics = []
                 for i in range(B):
@@ -301,31 +251,23 @@ def train_on_real_dataset(train_loader, device):
                     real_exist_prob = existence_probs[i, :V_i].mean().item()
                     fake_exist_prob = existence_probs[i, V_i:].mean().item() if V_i < model.max_vertices else 0.0
                     
-                    vertex_dist_i = torch.norm(pred_vertices[i:i+1, :V_i, :] - vertices_gt_padded[i:i+1, :V_i, :], dim=2)
-                    mean_error_norm = vertex_dist_i.mean().item()
+                    vertex_dist_i = torch.norm(pred_vertices_abs[i:i+1, :V_i, :] - vertices_gt_padded[i:i+1, :V_i, :], dim=2)
+                    mean_error_world = vertex_dist_i.mean().item()
                     
-                    # Convert to real-world error in meters
-                    if max_distance is not None:
-                        mean_error_world = mean_error_norm * max_distance
-                        # Use real threshold: 50mm in world space
-                        threshold_norm = 0.05 / max_distance  # 0.05m = 50mm in normalized space
-                        accurate_i = torch.sum(vertex_dist_i < threshold_norm).item()
-                    else:
-                        mean_error_world = mean_error_norm  # No normalization
-                        accurate_i = torch.sum(vertex_dist_i < 0.05).item()
+                    # Model already predicts in absolute world coordinates (not normalized)
+                    # So the error is already in meters - no scaling needed!
+                    accurate_i = torch.sum(vertex_dist_i < 0.05).item()
                     
                     sample_metrics.append({
                         'pred_num': num_exists,
                         'real_prob': real_exist_prob,
                         'fake_prob': fake_exist_prob,
-                        'mean_error_norm': mean_error_norm,  # Keep normalized for analysis
-                        'mean_error_world': mean_error_world,  # THE REAL ERROR!
+                        'mean_error_world': mean_error_world,  # Error in meters (already in world coords)
                         'accurate': accurate_i,
                         'total': V_i
                     })
                 
-                # Average metrics across batch - use REAL-WORLD errors!
-                mean_vertex_error_norm = np.mean([m['mean_error_norm'] for m in sample_metrics])
+                # Average metrics across batch
                 mean_vertex_error_world = np.mean([m['mean_error_world'] for m in sample_metrics])
                 
                 # Track best based on REAL error
@@ -335,53 +277,17 @@ def train_on_real_dataset(train_loader, device):
                 # Get current learning rate
                 current_lr = optimizer.param_groups[0]['lr']
                 
-                # Print with REAL-WORLD errors prominently displayed
-                if max_distance:
-                    print(f"Epoch {epoch+1:4d}: Loss={total_loss.item():.6f} "
-                          f"(Coord={coord_loss.item():.6f}×{coord_weight:.1f}, Exist={existence_loss.item():.6f}×{existence_weight:.1f}), "
-                          f"LR={current_lr:.2e}")
-                    print(f"          REAL Error: {mean_vertex_error_world:.4f}m ({mean_vertex_error_world*1000:.0f}mm) "
-                          f"[norm: {mean_vertex_error_norm:.4f}]")
-                else:
-                    print(f"Epoch {epoch+1:4d}: Loss={total_loss.item():.6f} "
-                          f"(Coord={coord_loss.item():.6f}×{coord_weight:.1f}, Exist={existence_loss.item():.6f}×{existence_weight:.1f}), "
-                          f"LR={current_lr:.2e}, Mean_err={mean_vertex_error_norm:.4f}")
+                # Print training progress
+                print(f"Epoch {epoch+1:4d}: Loss={total_loss.item():.6f} "
+                      f"(Coord={coord_loss.item():.6f}×{criterion.coord_weight:.1f}, Exist={existence_loss.item():.6f}×{criterion.existence_weight:.1f}), "
+                      f"LR={current_lr:.2e}")
                 
-                # Show SINGLE sample details (only 1 sample now)
-                for idx in [0]:  # Only sample 0
-                    m = sample_metrics[idx]
-                    if max_distance:
-                        print(f"  Sample{idx+1}: Pred_num={m['pred_num']:.0f}/{num_vertices_list[idx]}, "
-                              f"RealProb={m['real_prob']:.3f}, FakeProb={m['fake_prob']:.3f}, "
-                              f"Err={m['mean_error_world']:.4f}m ({m['mean_error_world']*1000:.0f}mm), "
-                              f"Acc={m['accurate']}/{num_vertices_list[idx]}")
-                    else:
-                        print(f"  Sample{idx+1}: Pred_num={m['pred_num']:.0f}/{num_vertices_list[idx]}, "
-                              f"RealProb={m['real_prob']:.3f}, FakeProb={m['fake_prob']:.3f}, "
-                              f"Mean_err={m['mean_error_norm']:.4f}, Acc={m['accurate']}/{num_vertices_list[idx]}")
-                
-                # Progress checkpoint every 50 epochs (faster for single sample)
-                if max_distance and (epoch + 1) % 50 == 0:
-                    print(f"  " + "="*60)
-                    if mean_vertex_error_world > 0.5:
-                        print(f"  WARNING: Error still > 0.5m after {epoch+1} epochs")
-                        print(f"  Consider: More epochs or check data quality")
-                    elif mean_vertex_error_world > 0.1:
-                        print(f"  Progress: Error {mean_vertex_error_world*1000:.0f}mm (target: <10mm)")
-                    elif mean_vertex_error_world > 0.01:
-                        print(f"  Good progress! Error {mean_vertex_error_world*1000:.0f}mm (almost perfect!)")
-                    else:
-                        print(f"  PERFECT OVERFIT! Error {mean_vertex_error_world*1000:.0f}mm < 10mm target!")
-                    print(f"  " + "="*60)
-                
-    # Final evaluation with detailed per-sample analysis
+    # Final evaluation
     print("\n" + "="*60)
-    print("FINAL EVALUATION - SINGLE SAMPLE RESULT")
-    print("="*60)
     
     model.eval()
     with torch.no_grad():
-        outputs = model(points)
+        outputs = model(points, return_absolute=True)  # Get absolute coords for final eval
         pred_vertices = outputs['vertex_coords']
         existence_probs = outputs['existence_probs']
         
@@ -427,6 +333,6 @@ def train_on_real_dataset(train_loader, device):
         'model': model,
         'best_vertex_error': best_vertex_error,
         'device_used': str(device),
-        'samples_trained': 'samples 1, 10, 100, 1003, 1004, 1006, 10001, 10004, 10005, 10006, 10007, 10011',
+        'samples_trained': 'samples 1, 10, 100, 1003',
         'batch_size': B
     }

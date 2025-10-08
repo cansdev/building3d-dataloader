@@ -1,12 +1,42 @@
 # Centralized Configuration for Building3D DGCNN Training
 
+# Training Configuration
+Training:
+  # Model configuration
+  model:
+    input_dim: 5
+    k_neighbors: 20
+    max_vertices: 64
+  
+  # Loss function
+  loss:
+    use_hungarian: false  # true for hungarian matching, false for MSE
+    coord_weight: 10.0
+    existence_weight: 1.0
+  
+  # Optimizer
+  optimizer:
+    type: 'AdamW'
+    lr: 0.001
+    weight_decay: 0.0001
+  
+  # Scheduler
+  scheduler:
+    type: 'CosineAnnealingLR'
+    T_max: 1000
+    eta_min: 0.00005
+  
+  # Training loop
+  num_epochs: 1000
+  gradient_clip_norm: 1.0
+
 # Dataset Configuration
 Building3D:
   root_dir: './datasets/demo_dataset' # Building3D dataset root dir
   num_points: 2560
   use_color: True
   use_intensity: True
-  augment: True 
+  augment: False 
   
   # Preprocessor Configuration
   preprocessor:
@@ -127,58 +157,3 @@ Building3D:
       normalize_weights: True
       multi_scale: True  
       use_normal_analysis: True
-
-# Model Configuration
-model:
-  architecture: 'dgcnn'
-  input_dim: 5  # X, Y, Z, GroupID, BorderWeight
-  k: 20  # Number of nearest neighbors
-  max_vertices: 64  # Maximum number of vertices to predict
-  dropout_rates:
-    conv: 0.3  # Dropout for conv layers
-    linear: 0.2  # Dropout for linear layers
-
-# Training Configuration
-training:
-  batch_size: 4
-  num_epochs: 500
-  learning_rate: 0.005
-  weight_decay: 0.0
-  optimizer: 'adam'
-  
-  # Loss weights for multi-task learning
-  loss_weights:
-    vertices: 1.0
-    num_vertices: 0.1
-  
-  # Deterministic training settings
-  seed: 42
-  deterministic: True
-  
-  # Data loading
-  num_workers: 0  
-  pin_memory: True
-  shuffle: False 
-
-# Paths Configuration
-paths:
-  model_save_path: 'trained_dgcnn_model.pth'
-  output_dir: 'output'
-
-# Visualization Configuration
-visualization:
-  default_model_path: 'trained_dgcnn_model.pth'
-  sample_id: 1 
-  point_size: 3
-  vertex_size: 20
-  
-# Device Configuration
-device:
-  auto_detect: True
-  prefer_cuda: True
-  
-# Logging Configuration
-logging:
-  verbose: True
-  print_gpu_memory: True
-  save_training_progress: True

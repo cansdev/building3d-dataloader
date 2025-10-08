@@ -346,10 +346,25 @@ def load_trained_model(model_path=None, input_dim=5, k=20, device=None):
         model_path = 'trained_dgcnn_model.pth'  # Default path
     
     if model_path and os.path.exists(model_path):
-        model.load_state_dict(torch.load(model_path, map_location=device))
-        print(f"Loaded trained model from {model_path}")
+        try:
+            checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+            
+            # Handle both direct state dict and checkpoint dict formats
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+            else:
+                state_dict = checkpoint
+            
+            model.load_state_dict(state_dict)
+            print(f"✓ Loaded trained model from {model_path}")
+            print(f"  Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+        except RuntimeError as e:
+            print(f"✗ Error loading model: {e}")
+            print(f"  Model architecture mismatch - using newly trained model instead")
+            print(f"  (This happens when model architecture changes)")
+            # Don't load weights if there's a mismatch - use random init
     else:
-        print("Warning: No saved model found, using randomly initialized model")
+        print("⚠ Warning: No saved model found, using randomly initialized model")
     
     model = model.to(device)
     model.eval()
@@ -425,7 +440,7 @@ def predict_vertices_with_model(model, point_cloud, device, max_vertices=50):
     with torch.no_grad():
         point_cloud_tensor = torch.from_numpy(point_cloud).float().unsqueeze(0).to(device)
         
-        # Get model outputs
+        # Get model outputs - now always returns absolute coordinates
         outputs = model(point_cloud_tensor)
         vertex_coords = outputs['vertex_coords'].cpu().numpy()[0]  # [max_vertices, 3]
         existence_probs = outputs['existence_probs'].cpu().numpy()[0]  # [max_vertices]
@@ -493,37 +508,10 @@ def main_visualization_matplotlib(sample_id=1, model_path=None):
     print(f"   GT edges: {gt_edges.shape}")
     if max_distance is not None:
         print(f"   Normalization scale: {max_distance:.2f}m (used for denormalizing errors)")
-    print(f"   GT vertex coordinate ranges (original orientation):")
+    print(f"   GT vertex coordinate ranges:")
     print(f"     X: [{gt_vertices[:, 0].min():.3f}, {gt_vertices[:, 0].max():.3f}]")
     print(f"     Y: [{gt_vertices[:, 1].min():.3f}, {gt_vertices[:, 1].max():.3f}]")
     print(f"     Z: [{gt_vertices[:, 2].min():.3f}, {gt_vertices[:, 2].max():.3f}]")
-    
-    # ===== OPTION 2: Transform GT to canonical space =====
-    # The model predicts in canonical space, so we need to transform GT to canonical too
-    from models.dgcnn_model import compute_pca_alignment
-    coords_tensor = torch.from_numpy(point_cloud[:, :3]).unsqueeze(0).float()  # [1, N, 3]
-    with torch.no_grad():
-        _, _, rotation_matrix, centroid = compute_pca_alignment(coords_tensor, return_transform=True)
-    
-    # Transform GT to canonical space
-    gt_vertices_tensor = torch.from_numpy(gt_vertices).float()
-    gt_centered = gt_vertices_tensor - centroid[0].cpu()
-    gt_vertices_canonical = torch.matmul(gt_centered, rotation_matrix[0].cpu()).numpy()
-    
-    # Transform point cloud to canonical space too (for visualization consistency)
-    point_cloud_coords = torch.from_numpy(point_cloud[:, :3]).float()
-    pc_centered = point_cloud_coords - centroid[0].cpu()
-    point_cloud_canonical = torch.matmul(pc_centered, rotation_matrix[0].cpu()).numpy()
-    
-    # Reconstruct full point cloud with transformed coordinates
-    point_cloud_canonical_full = np.copy(point_cloud)
-    point_cloud_canonical_full[:, :3] = point_cloud_canonical
-    
-    print(f"   GT and point cloud transformed to canonical space for comparison")
-    print(f"   GT vertex coordinate ranges (canonical space):")
-    print(f"     X: [{gt_vertices_canonical[:, 0].min():.3f}, {gt_vertices_canonical[:, 0].max():.3f}]")
-    print(f"     Y: [{gt_vertices_canonical[:, 1].min():.3f}, {gt_vertices_canonical[:, 1].max():.3f}]")
-    print(f"     Z: [{gt_vertices_canonical[:, 2].min():.3f}, {gt_vertices_canonical[:, 2].max():.3f}]")
     
     # Load and run model
     model, device = load_trained_model(model_path, input_dim=point_cloud.shape[1])
@@ -532,14 +520,14 @@ def main_visualization_matplotlib(sample_id=1, model_path=None):
     # Visualizations
     print(f"\nStarting matplotlib visualizations...")
     
-    # Comparison: Ground truth vs predicted (ALL IN CANONICAL SPACE)
-    print("Ground truth vs predicted vertices (in canonical space)...")
+    # Comparison: Ground truth vs predicted
+    print("Ground truth vs predicted vertices...")
     visualize_comparison_matplotlib(
-        point_cloud_canonical_full,  # Use canonical point cloud (aligned)
-        gt_vertices_canonical,       # Use canonical GT
-        predicted_vertices,          # Already in canonical space
+        point_cloud,
+        gt_vertices,
+        predicted_vertices,
         gt_edges,
-        title=f"Sample {sample_id} - GT (Red) vs Predicted (Green) Vertices (Canonical Space)",
+        title=f"Sample {sample_id} - GT (Red) vs Predicted (Green) Vertices",
         border_weights=border_weights,
         max_distance=max_distance
     )
@@ -547,6 +535,4 @@ def main_visualization_matplotlib(sample_id=1, model_path=None):
     print("Matplotlib visualization complete!")
 
 if __name__ == "__main__":
-    # Run matplotlib-based visualization for sample 1 (from train split)
-    # Note: Sample 1 is in train split, so we use use_test_split=False
-    main_visualization_matplotlib(sample_id=1004, model_path=None)
+    main_visualization_matplotlib(sample_id=1, model_path=None)

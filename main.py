@@ -50,7 +50,7 @@ def load_training_data(device=None):
     train_loader = DataLoader(
         building3D_dataset['train'], 
         batch_size=4,
-        shuffle=False,  # DISABLED for deterministic overfitting
+        shuffle=False,
         drop_last=True, 
         collate_fn=building3D_dataset['train'].collate_batch,
         pin_memory=use_cuda,  # Pin memory for faster GPU transfer
@@ -74,13 +74,17 @@ def main():
         device = get_device()
         print(f"Using device: {device}")
         
+        # Load configuration
+        dataset_config = cfg_from_yaml_file('datasets/dataset_config.yaml')
+        train_config = dataset_config.Training  # Get training config
+        
         train_loader = load_training_data(device)
 
         print("\n" + "=" * 60)
         print("STARTING TRAINING SETUP")
         print("=" * 60)
         
-        training_data = train_on_real_dataset(train_loader, device)
+        training_data = train_on_real_dataset(train_loader, device, train_config)
 
         # Save the trained model
         if 'model' in training_data:
