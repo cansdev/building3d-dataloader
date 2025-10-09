@@ -7,7 +7,7 @@ from losses import AdaptiveCornerLoss, create_corner_labels_improved
 import os
 import numpy as np
 
-def train_model(train_loader, test_loader, dataset_config):
+def train_model(train_loader, dataset_config):
     """
     Train PointNet2 model with preprocessed data
     
@@ -43,7 +43,6 @@ def train_model(train_loader, test_loader, dataset_config):
     print(f"Starting training on {device}")
     print(f"Model input channels: {input_channels}")
     print(f"Training samples: {len(train_loader.dataset)}")
-    print(f"Test samples: {len(test_loader.dataset)}")
     
     # Training loop
     for epoch in range(num_epochs):

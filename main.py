@@ -37,16 +37,8 @@ def train_with_preprocessed_data():
         collate_fn=building3D_dataset['train'].collate_batch
     )
     
-    test_loader = DataLoader(
-        building3D_dataset['test'], 
-        batch_size=3, 
-        shuffle=False, 
-        drop_last=False, 
-        collate_fn=building3D_dataset['test'].collate_batch
-    )
-    
     # Call training function with preprocessed data using corner loss
-    model = train_model(train_loader, test_loader, dataset_config)
+    model = train_model(train_loader, dataset_config)
     return model
 
 def main():
