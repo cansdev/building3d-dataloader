@@ -5,13 +5,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class VertexPredictionLoss(nn.Module):
+class VertexLossMSE(nn.Module):
     """
     Combined loss: MSE for coordinates, BCE for existence.
     """
     
     def __init__(self, coord_weight=10.0, existence_weight=1.0):
-        super(VertexPredictionLoss, self).__init__()
+        super(VertexLossMSE, self).__init__()
         
         self.coord_weight = coord_weight
         self.existence_weight = existence_weight

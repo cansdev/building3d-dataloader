@@ -6,14 +6,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 
-class HungarianVertexLoss(nn.Module):
+class VertexLosshHungarian(nn.Module):
     """
     Combined loss: Hungarian matching + MSE for coordinates, BCE for existence.
     DETR-style optimal bipartite matching for handling vertex correspondence.
     """
     
     def __init__(self, coord_weight=10.0, existence_weight=1.0):
-        super(HungarianVertexLoss, self).__init__()
+        super(VertexLosshHungarian, self).__init__()
         
         self.coord_weight = coord_weight
         self.existence_weight = existence_weight
