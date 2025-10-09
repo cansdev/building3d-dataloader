@@ -10,63 +10,6 @@ from sklearn.neighbors import NearestNeighbors
 from .outlier_removal import clean_point_cloud
 
 
-def compute_local_density(points, radius=0.1):
-    """
-    Compute local point density for adaptive k-neighbor selection.
-    
-    Args:
-        points (np.ndarray): Point cloud coordinates with shape (N, 3)
-        radius (float): Radius for density computation
-        
-    Returns:
-        np.ndarray: Local density for each point
-    """
-    n_points = points.shape[0]
-    densities = np.zeros(n_points)
-    
-    # Use radius-based neighbors for density estimation
-    nbrs = NearestNeighbors(algorithm='kd_tree').fit(points)
-    
-    for i in range(n_points):
-        # Find all neighbors within radius
-        indices = nbrs.radius_neighbors([points[i]], radius=radius, return_distance=False)[0]
-        densities[i] = len(indices) - 1  # Exclude the point itself
-    
-    return densities
-
-
-def adaptive_k_neighbors(points, base_k=10, min_k=5, max_k=30, density_radius=0.1):
-    """
-    Compute adaptive k for each point based on local density.
-    
-    Args:
-        points (np.ndarray): Point cloud coordinates with shape (N, 3)
-        base_k (int): Base number of neighbors
-        min_k (int): Minimum k value
-        max_k (int): Maximum k value
-        density_radius (float): Radius for density computation
-        
-    Returns:
-        np.ndarray: Adaptive k values for each point
-    """
-    densities = compute_local_density(points, density_radius)
-    
-    # Normalize densities to [0, 1] range
-    min_density = np.min(densities)
-    max_density = np.max(densities)
-    
-    if max_density > min_density:
-        normalized_densities = (densities - min_density) / (max_density - min_density)
-    else:
-        normalized_densities = np.ones_like(densities) * 0.5
-    
-    # Inverse relationship: low density → high k, high density → low k
-    k_values = base_k + (max_k - base_k) * (1 - normalized_densities)
-    k_values = np.clip(k_values, min_k, max_k).astype(int)
-    
-    return k_values
-
-
 def normalize_data(point_cloud, wf_vertices, clean_outliers=True, outlier_params=None):
     """
     Normalize point cloud and wireframe data to be centered at origin with unit scale.

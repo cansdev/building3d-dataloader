@@ -28,61 +28,17 @@ class Building3DPreprocessor:
         Initialize the preprocessor with configuration parameters.
         
         Args:
-            config (dict): Configuration dictionary with preprocessing parameters
+            config (dict): Configuration dictionary with preprocessing parameters (required)
             cache_dir (str): Directory to store cached preprocessed data
         """
-        self.config = config or {}
+        if config is None:
+            raise ValueError("Configuration is required. Please provide a config dictionary.")
+        
+        self.config = config
         self.cache_dir = cache_dir or os.path.join(os.path.dirname(__file__), '..', 'datasets', 'preprocessed')
         
         # Ensure cache directory exists
         os.makedirs(self.cache_dir, exist_ok=True)
-        
-        # Default configuration
-        self.default_config = {
-            'normalize': True,
-            'use_outlier_removal': True,
-            'use_surface_grouping': False,
-            'compute_border_weights': True,
-            'outlier_params': {
-                'stat_k': 15,
-                'stat_std_ratio': 2.5,
-                'radius_threshold': 0.04,
-                'radius_min_neighbors': 3,
-                'elev_std_ratio': 2.5,
-                'auto_scale_radii': True
-            },
-            'grouping_params': {
-                'coarse_params': {
-                    'eps': 0.05,
-                    'min_samples': 5,
-                    'auto_scale_eps': True
-                },
-                'refinement_params': {
-                    'merge_distance': 0.05,
-                    'min_group_size': 15
-                }
-            },
-            'weight_params': {
-                'k_neighbors': 25,
-                'normalize_weights': True,
-                'multi_scale': False,
-                'use_normal_analysis': False  # Disabled since normals are removed
-            }
-        }
-        
-        # Merge user config with defaults
-        self._merge_config()
-    
-    def _merge_config(self):
-        """Merge user configuration with defaults."""
-        for key, value in self.default_config.items():
-            if key not in self.config:
-                self.config[key] = value
-            elif isinstance(value, dict) and isinstance(self.config[key], dict):
-                # Deep merge for nested dictionaries
-                merged_dict = value.copy()
-                merged_dict.update(self.config[key])
-                self.config[key] = merged_dict
     
     def _generate_cache_key(self, point_cloud_file, wireframe_file=None):
         """
@@ -135,9 +91,6 @@ class Building3DPreprocessor:
             
             with open(cache_path, 'wb') as f:
                 pickle.dump(cache_data, f, protocol=pickle.HIGHEST_PROTOCOL)
-                
-            if hasattr(self, '_verbose') and self._verbose:
-                print(f"Saved preprocessed data to cache: {cache_key}")
                 
         except Exception as e:
             print(f"Warning: Failed to save cache {cache_key}: {e}")
@@ -228,28 +181,26 @@ class Building3DPreprocessor:
             cache_key = self._generate_cache_key(point_cloud_file, wireframe_file)
             cached_results = self._load_from_cache(cache_key)
             if cached_results is not None:
+                # Print summary even for cached data if verbose
+                if verbose:
+                    self._print_processing_summary(cached_results)
                 return cached_results
         
-        if verbose:
-            print(f"\n=== Building3D Preprocessing Pipeline ===")
-            print(f"Input point cloud shape: {point_cloud.shape}")
-            if wireframe_vertices is not None:
-                print(f"Wireframe vertices shape: {wireframe_vertices.shape}")
+        # Store source filename for summary
+        source_filename = os.path.basename(point_cloud_file) if point_cloud_file else "unknown"
         
         results = {
             'processed_points': point_cloud.copy(),
             'processed_wireframe': wireframe_vertices.copy() if wireframe_vertices is not None else None,
             'metadata': {
                 'original_shape': point_cloud.shape,
-                'processing_steps': []
+                'processing_steps': [],
+                'source_file': source_filename
             }
         }
         
         # Step 1: Normalization and basic processing
         if self.config['normalize']:
-            if verbose:
-                print("\n--- Step 1: Normalization ---")
-            
             if self.config['use_surface_grouping']:
                 results = self._apply_surface_aware_processing(results, verbose)
             else:
@@ -257,14 +208,11 @@ class Building3DPreprocessor:
         
         # Step 2: Compute border weights
         if self.config['compute_border_weights']:
-            if verbose:
-                print("\n--- Step 2: Border Weight Computation ---")
             results = self._compute_border_weights(results, verbose)
         
+        # Final summary
         if verbose:
-            print(f"\n=== Pipeline Complete ===")
-            print(f"Final point cloud shape: {results['processed_points'].shape}")
-            print(f"Processing steps: {', '.join(results['metadata']['processing_steps'])}")
+            self._print_processing_summary(results)
         
         # Save to cache if enabled and cache key available
         if use_cache and cache_key:
@@ -272,95 +220,113 @@ class Building3DPreprocessor:
         
         return results
     
+    def _print_processing_summary(self, results):
+        """Print a single-line processing summary."""
+        metadata = results['metadata']
+        source_file = metadata.get('source_file', 'unknown')
+        
+        # Point statistics
+        original_count = metadata['original_shape'][0]
+        final_count = len(results['processed_points'])
+        removed_count = metadata.get('points_removed', 0)
+        
+        # Format: 1k, 10k, etc.
+        def format_count(n):
+            if n >= 1000:
+                return f"{n//1000}k"
+            return str(n)
+        
+        summary_parts = [f"{source_file}: {format_count(final_count)} points"]
+        
+        if removed_count > 0:
+            summary_parts.append(f"(-{removed_count} outliers)")
+        
+        # Border weight statistics
+        if 'border_weight_stats' in metadata:
+            stats = metadata['border_weight_stats']
+            summary_parts.append(f"{stats['high']} high {stats['medium']} medium {stats['low']} low borderweights")
+        
+        # Group statistics with per-group point counts
+        if 'num_groups' in metadata and 'group_info' in metadata:
+            group_info = metadata['group_info']
+            num_groups = metadata['num_groups']
+            # Get point counts per group (use 'cleaned_size' key)
+            group_sizes = [info['cleaned_size'] for info in group_info]
+            group_sizes_str = ', '.join(map(str, group_sizes))
+            summary_parts.append(f"{num_groups} groupids ({group_sizes_str}) points")
+        
+        print(', '.join(summary_parts))
+    
     def _apply_surface_aware_processing(self, results, verbose):
-        """Apply surface-aware normalization pipeline."""
+        """Apply surface-aware processing pipeline with sequential steps."""
+        from .surface_grouping import simple_spatial_grouping, process_all_surface_groups
+        
         point_cloud = results['processed_points']
         wireframe_vertices = results['processed_wireframe']
+        original_count = len(point_cloud)
         
-        if verbose:
-            print("Using surface-aware processing pipeline")
-        
-        # Configure pipeline parameters
-        outlier_params = self.config['outlier_params'].copy()
-        grouping_params = self.config['grouping_params'].copy()
-        
-        processing_params = {
-            'apply_outlier_removal': self.config['use_outlier_removal'],
-            'compute_normals': False,  # Disabled - normals removed from pipeline
-            'use_neighbor_cache': True
-        }
-        
-        # Run surface-aware pipeline
-        surface_results = surface_aware_normalization_pipeline(
-            point_cloud[:, 0:3],  # Only XYZ coordinates for grouping
-            outlier_removal_params=outlier_params,
-            grouping_params=grouping_params,
-            processing_params=processing_params
+        # Step 1: Spatial Grouping (on raw unnormalized points)
+        grouping_params = self.config['grouping_params']['coarse_params']
+        surface_groups = simple_spatial_grouping(
+            point_cloud[:, 0:3],
+            **grouping_params
         )
         
-        if surface_results is not None:
-            # Integrate results back into point cloud
-            cleaned_points = surface_results['cleaned_points']
-            group_ids = surface_results.get('group_ids', None)
-            
-            # Normalize coordinates to unit scale
-            centroid = np.mean(cleaned_points, axis=0)
-            centered_points = cleaned_points - centroid
-            max_distance = np.max(np.linalg.norm(centered_points, axis=1))
-            
-            if max_distance > 1e-6:
-                normalized_coords = centered_points / max_distance
-            else:
-                normalized_coords = centered_points
-            
-            # Apply same transformation to wireframe if provided
-            if wireframe_vertices is not None:
-                wireframe_vertices = (wireframe_vertices - centroid) / max_distance
-                results['processed_wireframe'] = wireframe_vertices
-            
-            # Reconstruct point cloud with X Y Z GroupID (BorderWeight to be added later)
-            n_cleaned = len(cleaned_points)
-            
-            if point_cloud.shape[1] >= 8:  # Expecting X Y Z R G B A I format
-                # Output: X Y Z GroupID (BorderWeight will be added in _compute_border_weights)
-                output_dims = 4  # XYZ + GroupID (BorderWeight added later)
-                reconstructed_pc = np.zeros((n_cleaned, output_dims))
-                
-                # Set coordinates
-                reconstructed_pc[:, 0:3] = normalized_coords
-                col_idx = 3
-                
-                # Add group IDs if available
-                if group_ids is not None:
-                    reconstructed_pc[:, col_idx] = group_ids
-                    col_idx += 1
-                
-                # Note: BorderWeight will be added by _compute_border_weights step
-                results['processed_points'] = reconstructed_pc
-            else:
-                # Fallback: just coordinates + group ids
-                components = [normalized_coords]
-                if group_ids is not None:
-                    components.append(group_ids.reshape(-1, 1))
-                
-                results['processed_points'] = np.column_stack(components)
-            
-            # Store metadata
-            results['metadata']['centroid'] = centroid
-            results['metadata']['max_distance'] = max_distance
-            results['metadata']['has_normals'] = False  # Normals removed from pipeline
-            results['metadata']['has_group_ids'] = group_ids is not None
-            results['metadata']['processing_steps'].append('surface_aware_normalization')
-            
+        if not surface_groups:
             if verbose:
-                print(f"Surface-aware processing successful")
-                print(f"Points: {len(point_cloud)} -> {n_cleaned}")
-                print(f"Features: groups={group_ids is not None}")
+                print("Warning: No surface groups detected, falling back to standard normalization")
+            return self._apply_standard_normalization(results, verbose)
         
+        results['metadata']['num_groups'] = len(surface_groups)
+        
+        # Step 2: Per-Group Outlier Removal
+        processing_params = {
+            'apply_outlier_removal': self.config['use_outlier_removal'],
+            'compute_normals': False,
+            'use_neighbor_cache': True,
+            'config': self.config['grouping_params']
+        }
+        
+        if self.config['use_outlier_removal']:
+            processing_params['outlier_removal_params'] = self.config['outlier_params']
+        
+        processing_results = process_all_surface_groups(
+            surface_groups,
+            **processing_params
+        )
+        
+        cleaned_points = processing_results['cleaned_points']
+        group_ids = processing_results['group_ids']
+        removed_count = original_count - len(cleaned_points)
+        
+        results['metadata']['points_removed'] = removed_count
+        results['metadata']['group_info'] = processing_results['group_info']
+        
+        # Step 3: Normalization (after cleaning)
+        centroid = np.mean(cleaned_points, axis=0)
+        centered_points = cleaned_points - centroid
+        max_distance = np.max(np.linalg.norm(centered_points, axis=1))
+        
+        if max_distance > 1e-6:
+            normalized_coords = centered_points / max_distance
         else:
-            if verbose:
-                print("Surface-aware processing failed, falling back to standard normalization")
-            results = self._apply_standard_normalization(results, verbose)
+            normalized_coords = centered_points
+        
+        # Apply same transformation to wireframe if provided
+        if wireframe_vertices is not None:
+            wireframe_vertices = (wireframe_vertices - centroid) / max_distance
+            results['processed_wireframe'] = wireframe_vertices
+        
+        # Reconstruct point cloud with X Y Z GroupID
+        reconstructed_pc = np.zeros((len(cleaned_points), 4))
+        reconstructed_pc[:, 0:3] = normalized_coords
+        reconstructed_pc[:, 3] = group_ids
+        
+        results['processed_points'] = reconstructed_pc
+        results['metadata']['centroid'] = centroid
+        results['metadata']['max_distance'] = max_distance
+        results['metadata']['has_group_ids'] = True
+        results['metadata']['processing_steps'].append('surface_aware_processing')
         
         return results
     
@@ -397,10 +363,10 @@ class Building3DPreprocessor:
         """Compute border weights for the processed point cloud."""
         point_cloud = results['processed_points']
         
-        # Extract coordinates only (no normals available)
+        # Extract coordinates only
         coordinates = point_cloud[:, 0:3]
         
-        # Compute border weights without normal analysis
+        # Compute border weights
         weight_params = self.config['weight_params']
         border_weights = compute_border_weights(
             coordinates,
@@ -409,18 +375,24 @@ class Building3DPreprocessor:
             multi_scale=weight_params['multi_scale']
         )
         
+        # Categorize points by border weight
+        high_weight = np.sum(border_weights > 0.7)
+        medium_weight = np.sum((border_weights >= 0.3) & (border_weights <= 0.7))
+        low_weight = np.sum(border_weights < 0.3)
+        
+        results['metadata']['border_weight_stats'] = {
+            'high': high_weight,
+            'medium': medium_weight,
+            'low': low_weight,
+            'mean': float(np.mean(border_weights)),
+            'std': float(np.std(border_weights))
+        }
+        
         # Add border weights to the point cloud
         results['processed_points'] = np.column_stack([point_cloud, border_weights])
         results['metadata']['has_border_weights'] = True
-        results['metadata']['border_weight_column'] = point_cloud.shape[1]  # Index of border weight column
+        results['metadata']['border_weight_column'] = point_cloud.shape[1]
         results['metadata']['processing_steps'].append('border_weights')
-        
-        if verbose:
-            print(f"Border weights computed and added to point cloud")
-            print(f"Border weight statistics:")
-            print(f"  Mean: {np.mean(border_weights):.4f}")
-            print(f"  Std: {np.std(border_weights):.4f}")
-            print(f"  Min/Max: {np.min(border_weights):.4f}/{np.max(border_weights):.4f}")
         
         return results
     

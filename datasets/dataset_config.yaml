@@ -1,5 +1,3 @@
-# Centralized Configuration for Building3D DGCNN Training
-
 # Training Configuration
 Training:
   # Model configuration
@@ -10,7 +8,7 @@ Training:
   
   # Loss function
   loss:
-    use_hungarian: false  # true for hungarian matching, false for MSE
+    use_hungarian: False  # true for hungarian matching, false for MSE
     coord_weight: 10.0
     existence_weight: 1.0
   
@@ -36,7 +34,7 @@ Building3D:
   num_points: 2560
   use_color: True
   use_intensity: True
-  augment: False 
+  augment: False
   
   # Preprocessor Configuration
   preprocessor:
@@ -63,94 +61,20 @@ Building3D:
         merge_distance: 0.05
         min_group_size: 15
       
-      # Surface-specific processing parameters
-      surface_specific:
-        floor:
-          outlier_removal:
-            stat_k: 15
-            stat_std_ratio: 1.8
-            radius_threshold: 0.03
-            radius_min_neighbors: 4
-            auto_scale_radius_param: True
-          normal_computation:
-            base_k_neighbors: 15
-            curvature_threshold: 0.05
-            smooth_iterations: 2
-            smooth_radius: 0.04
-            adaptive_k: True
-        wall:
-          outlier_removal:
-            stat_k: 12
-            stat_std_ratio: 2.0
-            radius_threshold: 0.025
-            radius_min_neighbors: 3
-            auto_scale_radius_param: True
-          normal_computation:
-            base_k_neighbors: 12
-            curvature_threshold: 0.08
-            smooth_iterations: 1
-            smooth_radius: 0.03
-            adaptive_k: True
-        roof:
-          outlier_removal:
-            stat_k: 10
-            stat_std_ratio: 2.5
-            radius_threshold: 0.04
-            radius_min_neighbors: 2
-            auto_scale_radius_param: True
-          normal_computation:
-            base_k_neighbors: 10
-            curvature_threshold: 0.15
-            smooth_iterations: 1
-            smooth_radius: 0.05
-            adaptive_k: True
-        edge:
-          outlier_removal:
-            stat_k: 8
-            stat_std_ratio: 3.0
-            radius_threshold: 0.02
-            radius_min_neighbors: 2
-            auto_scale_radius_param: True
-          normal_computation:
-            base_k_neighbors: 8
-            curvature_threshold: 0.3
-            smooth_iterations: 0
-            smooth_radius: 0.02
-            adaptive_k: True
-        default:
-          outlier_removal:
-            stat_k: 12
-            stat_std_ratio: 3.5
-            radius_threshold: 0.03
-            radius_min_neighbors: 2
-            auto_scale_radius_param: True
-          normal_computation:
-            base_k_neighbors: 12
-            curvature_threshold: 0.1
-            smooth_iterations: 1
-            smooth_radius: 0.04
-            adaptive_k: True
-      
-      # Normal processing and refinement parameters
-      normal_similarity:
-        angle_threshold: 30.0
-      splitting:
-        normal_angle_threshold: 45.0
-        min_split_size: 10
-      merging:
-        max_distance: 0.1
-        min_normal_similarity: 0.7
-        same_type_bonus: 0.2
-      classification:
-        wall_normal_z_threshold: 0.3
-        floor_normal_z_threshold: 0.8
-      
-      # Height stratification parameters
-      height_stratification:
-        floor_height_range: [0.0, 0.3]
-        wall_height_range: [0.3, 0.85]
-        roof_height_min: 0.85
-        normalize_heights: True
+      # Default processing parameters for all spatial clusters
+      default_processing:
+        outlier_removal:
+          stat_k: 12
+          stat_std_ratio: 3.5
+          radius_threshold: 0.03
+          radius_min_neighbors: 2
+          auto_scale_radius_param: True
+        normal_computation:
+          base_k_neighbors: 12
+          curvature_threshold: 0.1
+          smooth_iterations: 1
+          smooth_radius: 0.04
+          adaptive_k: True
     
     weight_params:
       k_neighbors: 25

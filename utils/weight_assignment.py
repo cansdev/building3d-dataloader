@@ -22,12 +22,8 @@ def compute_border_weights(points, k_neighbors=30, normalize_weights=True, multi
     Returns:
         np.ndarray: border_weights of shape (N,)
     """
-    print(f"\n=== Border Weight Assignment ===")
-    print(f"Computing border weights for {len(points)} points")
-    print(f"Using k_neighbors={k_neighbors}")
     n_points = points.shape[0]
     if n_points < 4:
-        print("Too few points for weight calculation")
         return np.zeros(n_points)
     k_neighbors = min(k_neighbors, n_points - 1)
     if multi_scale:
@@ -46,18 +42,15 @@ def compute_border_weights(points, k_neighbors=30, normalize_weights=True, multi
             border_weights = np.average(border_weights_all, axis=0, weights=scale_weights)
         else:
             border_weights = np.zeros(n_points)
-        print(f"Multi-scale analysis with {len(scales)} scales")
     else:
         eigenvalues = calculate_local_features(points, k_neighbors)
         edge_w = calculate_edge_weights(eigenvalues)
         vertex_w = calculate_vertex_weights(eigenvalues)
         border_weights = np.maximum(edge_w, vertex_w)
-        print(f"Single-scale analysis")
     border_weights = enhance_weights(border_weights, weight_type="border")
-    border_weights = filter_isolated_features(points, border_weights, min_neighbors=3, radius=0.08)  # Stricter filtering
+    border_weights = filter_isolated_features(points, border_weights, min_neighbors=3, radius=0.08)
     if normalize_weights:
         border_weights = normalize_weight_values(border_weights)
-    print_border_weight_statistics(border_weights)
     return border_weights
 
 

@@ -147,14 +147,14 @@ class Building3DReconstructionDataset(Dataset):
         wf_vertices, wf_edges = load_wireframe(wireframe_file)
 
         # ------------------------------- Dataset Preprocessing ------------------------------
-                    # Use unified preprocessing pipeline with caching
+        # Use unified preprocessing pipeline with caching
         result = self.preprocessor.process_point_cloud(
                 point_cloud=point_cloud,
                 wireframe_vertices=wf_vertices,
                 point_cloud_file=pc_file,
                 wireframe_file=wireframe_file,
                 use_cache=True,
-                verbose=False  # Set to False to reduce output during training
+                verbose=True  # Show preprocessing summary
                 )
 
         # ALWAYS use preprocessed data from the pipeline
@@ -175,21 +175,9 @@ class Building3DReconstructionDataset(Dataset):
             aug_seed = (self.epoch * 10000 + index) % (2**31)
             aug_rng = np.random.RandomState(aug_seed)
             
-            # Uniform scaling (0.95 to 1.05)
-            scale = np.random.uniform(0.95, 1.05)
-            point_cloud[:, 0:3] *= scale
-            wf_vertices[:, 0:3] *= scale
-            
-            # 3. Jittering
-            noise_std = 0.001  # 2mm std dev noise
-            point_noise = np.random.normal(0, noise_std, point_cloud[:, 0:3].shape)
-            point_cloud[:, 0:3] += point_noise
-            
-            vertex_noise = np.random.normal(0, noise_std * 0.5, wf_vertices[:, 0:3].shape)
-            wf_vertices[:, 0:3] += vertex_noise
-
-            # Random Z-axis rotation (±180°)
-            rot_angle = aug_rng.uniform(-np.pi, np.pi)
+            # Random Z-axis rotation in multiples of 90° (0°, 90°, 180°, 270°)
+            rotation_choice = aug_rng.choice([0, 1, 2, 3])  # 0, 90, 180, 270 degrees
+            rot_angle = rotation_choice * np.pi / 2
             rot_mat = rotz(rot_angle)
             point_cloud[:, 0:3] = np.dot(point_cloud[:, 0:3], np.transpose(rot_mat))
             wf_vertices[:, 0:3] = np.dot(wf_vertices[:, 0:3], np.transpose(rot_mat))

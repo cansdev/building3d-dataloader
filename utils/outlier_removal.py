@@ -128,8 +128,6 @@ def remove_statistical_outliers(points, k_neighbors=20, std_ratio=2.0):
     
     inlier_points = points[inlier_mask]
     
-    print(f"Statistical outlier removal: {np.sum(~inlier_mask)}/{n_points} points removed ({100*np.sum(~inlier_mask)/n_points:.1f}%)")
-    
     return inlier_points, inlier_mask
 
 
@@ -173,8 +171,6 @@ def remove_radius_outliers(points, radius=0.05, min_neighbors=2, auto_scale_radi
     inlier_mask = neighbor_counts >= min_neighbors
     
     inlier_points = points[inlier_mask]
-    
-    print(f"Radius outlier removal: {np.sum(~inlier_mask)}/{n_points} points removed ({100*np.sum(~inlier_mask)/n_points:.1f}%)")
     
     return inlier_points, inlier_mask
 
