@@ -182,6 +182,13 @@ class Building3DReconstructionDataset(Dataset):
             point_cloud[:, 0:3] = np.dot(point_cloud[:, 0:3], np.transpose(rot_mat))
             wf_vertices[:, 0:3] = np.dot(wf_vertices[:, 0:3], np.transpose(rot_mat))
             
+            # Small Gaussian jittering (σ=0.01 in normalized space)
+            jitter_std = 0.01
+            point_jitter = aug_rng.normal(0, jitter_std, size=point_cloud[:, 0:3].shape)
+            vertex_jitter = aug_rng.normal(0, jitter_std, size=wf_vertices[:, 0:3].shape)
+            point_cloud[:, 0:3] += point_jitter
+            wf_vertices[:, 0:3] += vertex_jitter
+            
             # Note: GroupID (column 3) and BorderWeight (column 4) remain unchanged
             # Note: These augmentations are applied in normalized space
 
