@@ -5,3 +5,50 @@ Building3D:
   use_intensity: True
   normalize: True
   augment: True
+  
+  # NEW: Use geometric features as additional input channels to PointNet2
+  # These flags control both computation (preprocessing) AND usage (as model input)
+  use_group_ids: True        # Compute surface grouping AND add group IDs as input channel
+  use_border_weights: True   # Compute border weights AND add as input channel
+
+  preprocessor:
+    normalize: True
+    use_outlier_removal: False  
+    cache_dir: 'datasets/preprocessed'  # Preprocessed data cache directory
+    
+    outlier_params:
+      stat_k: 15
+      stat_std_ratio: 3.0 
+      radius_threshold: 0.04
+      radius_min_neighbors: 2 
+      elev_std_ratio: 3.0 
+      auto_scale_radii: True
+    
+    grouping_params:
+      coarse_params:
+        eps: 0.05
+        min_samples: 5
+        auto_scale_eps: True
+      refinement_params:
+        merge_distance: 0.05
+        min_group_size: 15
+      
+      default_processing:
+        outlier_removal:
+          stat_k: 12
+          stat_std_ratio: 3.5
+          radius_threshold: 0.03
+          radius_min_neighbors: 2
+          auto_scale_radius_param: True
+        normal_computation:
+          base_k_neighbors: 12
+          curvature_threshold: 0.1
+          smooth_iterations: 1
+          smooth_radius: 0.04
+          adaptive_k: True
+    
+    weight_params:
+      k_neighbors: 25
+      normalize_weights: True
+      multi_scale: True  
+      use_normal_analysis: True

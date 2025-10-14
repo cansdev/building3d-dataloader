@@ -26,6 +26,14 @@ def train_model(train_loader, dataset_config):
     if dataset_config.Building3D.use_intensity:
         input_channels += 1  # intensity
     
+    # NEW: Add geometric feature channels
+    if getattr(dataset_config.Building3D, 'use_group_ids', False):
+        input_channels += 1  # normalized group_id
+        print("  Including group_ids as input channel")
+    if getattr(dataset_config.Building3D, 'use_border_weights', False):
+        input_channels += 1  # border_weights
+        print("  Including border_weights as input channel")
+    
     model = PointNet2CornerDetection(input_channels=input_channels)
     model = model.to(device)
     
@@ -119,12 +127,16 @@ def train_model(train_loader, dataset_config):
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': avg_loss,
+                'input_channels': input_channels,  # Save architecture info
             }, checkpoint_path)
             print(f'Checkpoint saved: {checkpoint_path}')
     
     # Save final model
     final_model_path = 'output/corner_detection_model.pth'
-    torch.save(model.state_dict(), final_model_path)
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'input_channels': input_channels,  # Save architecture info
+    }, final_model_path)
     print(f'Final model saved: {final_model_path}')
     
     return model

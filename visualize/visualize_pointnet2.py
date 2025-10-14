@@ -13,7 +13,7 @@ on the Building3D dataset. It shows:
 # =============================================================================
 # HYPERPARAMETERS
 # =============================================================================
-CORNER_THRESHOLD = 0.2  # Threshold for corner predictions (0.0-1.0)
+CORNER_THRESHOLD = 0.8 # Threshold for corner predictions (0.0-1.0)
 # =============================================================================
 
 import os
@@ -44,8 +44,30 @@ def cfg_from_yaml_file(cfg_file):
 
 def load_trained_model(model_path, input_channels, device):
     """Load trained PointNet2 model"""
-    model = PointNet2CornerDetection(input_channels=input_channels)
-    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=False))
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    
+    # Handle both checkpoint formats: full checkpoint dict or just state_dict
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        # New format: checkpoint contains model_state_dict and metadata
+        saved_input_channels = checkpoint.get('input_channels', None)
+        
+        if saved_input_channels is not None and saved_input_channels != input_channels:
+            print(f"⚠️  WARNING: Model was trained with {saved_input_channels} input channels, "
+                  f"but config specifies {input_channels} channels!")
+            print(f"    Using the model's trained architecture ({saved_input_channels} channels).")
+            input_channels = saved_input_channels
+        
+        model = PointNet2CornerDetection(input_channels=input_channels)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"Loaded checkpoint from epoch {checkpoint.get('epoch', 'unknown')}")
+        print(f"Model architecture: {input_channels} input channels")
+    else:
+        # Old format: checkpoint is just the state_dict
+        print("⚠️  WARNING: Old checkpoint format detected. Cannot verify input channels.")
+        print(f"    Assuming {input_channels} input channels from config.")
+        model = PointNet2CornerDetection(input_channels=input_channels)
+        model.load_state_dict(checkpoint)
+    
     model.to(device)
     model.eval()
     return model
@@ -184,12 +206,24 @@ def interactive_visualization():
     print("PointNet2 Corner Detection Visualization")
     print("=" * 50)
     
-    # Load configuration - fixed path
-    dataset_config = cfg_from_yaml_file('../datasets/dataset_config.yaml')
+    # Get the script directory and construct absolute paths
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    config_path = os.path.join(project_root, 'datasets', 'dataset_config.yaml')
+    model_path = os.path.join(project_root, 'output', 'corner_detection_model.pth')
     
-    # Fix the root_dir path to be relative to the parent directory
+    # Load configuration
+    if not os.path.exists(config_path):
+        print(f"Error: Config file not found at {config_path}")
+        return
+    
+    dataset_config = cfg_from_yaml_file(config_path)
+    
+    # Fix the root_dir path to be absolute
     if dataset_config.Building3D.root_dir.startswith('./'):
-        dataset_config.Building3D.root_dir = '../' + dataset_config.Building3D.root_dir[2:]
+        dataset_config.Building3D.root_dir = os.path.join(project_root, dataset_config.Building3D.root_dir[2:])
+    elif not os.path.isabs(dataset_config.Building3D.root_dir):
+        dataset_config.Building3D.root_dir = os.path.join(project_root, dataset_config.Building3D.root_dir)
     
     # Determine input channels
     input_channels = 3  # xyz coordinates
@@ -197,19 +231,23 @@ def interactive_visualization():
         input_channels += 4  # rgba
     if dataset_config.Building3D.use_intensity:
         input_channels += 1  # intensity
+    if getattr(dataset_config.Building3D, 'use_group_ids', False):
+        input_channels += 1  # group_id
+    if getattr(dataset_config.Building3D, 'use_border_weights', False):
+        input_channels += 1  # border_weights
     
     # Setup device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    # Load model - fixed path
-    model_path = '../output/corner_detection_model.pth'
+    # Load model
     if not os.path.exists(model_path):
         print(f"Error: Model file not found at {model_path}")
         print("Please train the model first by running main.py")
         return
     
     print(f"Loading model from {model_path}")
+    print(f"Model input channels: {input_channels}")
     model = load_trained_model(model_path, input_channels, device)
     
     # Load dataset
@@ -278,21 +316,36 @@ def main():
         # Non-interactive mode - visualize specific sample
         print(f"Visualizing sample {args.sample} from {args.split} dataset")
         
-        # Load configuration and model - fixed paths
-        dataset_config = cfg_from_yaml_file('../datasets/dataset_config.yaml')
+        # Get absolute paths
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(script_dir)
+        config_path = os.path.join(project_root, 'datasets', 'dataset_config.yaml')
+        model_path = os.path.join(project_root, 'output', 'corner_detection_model.pth')
         
-        # Fix the root_dir path to be relative to the parent directory
+        # Load configuration and model
+        if not os.path.exists(config_path):
+            print(f"Error: Config file not found at {config_path}")
+            return
+        
+        dataset_config = cfg_from_yaml_file(config_path)
+        
+        # Fix the root_dir path to be absolute
         if dataset_config.Building3D.root_dir.startswith('./'):
-            dataset_config.Building3D.root_dir = '../' + dataset_config.Building3D.root_dir[2:]
+            dataset_config.Building3D.root_dir = os.path.join(project_root, dataset_config.Building3D.root_dir[2:])
+        elif not os.path.isabs(dataset_config.Building3D.root_dir):
+            dataset_config.Building3D.root_dir = os.path.join(project_root, dataset_config.Building3D.root_dir)
         
         input_channels = 3
         if dataset_config.Building3D.use_color:
             input_channels += 4
         if dataset_config.Building3D.use_intensity:
             input_channels += 1
+        if getattr(dataset_config.Building3D, 'use_group_ids', False):
+            input_channels += 1
+        if getattr(dataset_config.Building3D, 'use_border_weights', False):
+            input_channels += 1
         
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model_path = '../output/corner_detection_model.pth'
         
         if not os.path.exists(model_path):
             print(f"Error: Model file not found at {model_path}")

@@ -31,7 +31,7 @@ def train_with_preprocessed_data():
     # Create data loaders for training and testing
     train_loader = DataLoader(
         building3D_dataset['train'], 
-        batch_size=3, 
+        batch_size=12, 
         shuffle=True, 
         drop_last=True, 
         collate_fn=building3D_dataset['train'].collate_batch
