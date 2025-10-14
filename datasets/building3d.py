@@ -71,6 +71,55 @@ def random_sampling(pc, num_points, replace=None, return_choices=False, seed=Non
         return pc[choices]
 
 
+def farthest_point_sampling(pc, num_points, seed=None):
+    r"""
+    Farthest Point Sampling for better point cloud coverage.
+    Selects points that are maximally distant from each other.
+    
+    :param pc: N * D (point cloud with N points and D features, uses first 3 for distance)
+    :param num_points: Int (number of points to sample)
+    :param seed: Random seed for deterministic first point selection
+    :return: Sampled point cloud of shape (num_points, D)
+    """
+    N, D = pc.shape
+    
+    # If requesting more points than available, duplicate points to reach desired count
+    if num_points >= N:
+        # Use random sampling with replacement to reach num_points
+        if seed is not None:
+            np.random.seed(seed)
+        indices = np.random.choice(N, num_points, replace=True)
+        return pc[indices]
+    
+    # Initialize
+    xyz = pc[:, :3]  # Use only XYZ for distance computation
+    centroids = np.zeros(num_points, dtype=np.int32)
+    distances = np.ones(N) * 1e10
+    
+    # Select first point randomly (with seed for reproducibility)
+    if seed is not None:
+        np.random.seed(seed)
+    farthest = np.random.randint(0, N)
+    
+    # Iteratively select farthest points
+    for i in range(num_points):
+        centroids[i] = farthest
+        centroid_xyz = xyz[farthest, :]
+        
+        # Compute distances from current centroid to all points
+        dist = np.sum((xyz - centroid_xyz) ** 2, axis=1)
+        
+        # Update minimum distances
+        mask = dist < distances
+        distances[mask] = dist[mask]
+        
+        # Select the farthest point
+        farthest = np.argmax(distances)
+    
+    # Return sampled points with all features
+    return pc[centroids]
+
+
 def rotz(t):
     """Rotation about the z-axis."""
     c = np.cos(t)
@@ -93,6 +142,9 @@ class Building3DReconstructionDataset(Dataset):
         
         # Epoch counter for deterministic-but-varying random sampling
         self.epoch = 0
+        
+        # Flag to show verbose output only on first epoch
+        self.show_preprocessing_details = True
         
         # Initialize preprocessor using YAML configuration
         self.preprocessor = create_default_preprocessor()
@@ -122,6 +174,8 @@ class Building3DReconstructionDataset(Dataset):
     def set_epoch(self, epoch):
         """Set the epoch number for deterministic-but-varying random sampling."""
         self.epoch = epoch
+        # Only show preprocessing details on first epoch (epoch 0)
+        self.show_preprocessing_details = (epoch == 0)
 
     def __getitem__(self, index):
         # ------------------------------- Point Clouds ------------------------------
@@ -154,7 +208,7 @@ class Building3DReconstructionDataset(Dataset):
                 point_cloud_file=pc_file,
                 wireframe_file=wireframe_file,
                 use_cache=True,
-                verbose=True  # Show preprocessing summary
+                verbose=self.show_preprocessing_details  # Only show details on first epoch
                 )
 
         # ALWAYS use preprocessed data from the pipeline
@@ -170,9 +224,9 @@ class Building3DReconstructionDataset(Dataset):
         # Apply augmentation AFTER preprocessing to preserve GroupID and BorderWeight
         # Only augment during training, not testing
         if self.augment and self.split_set == 'train':
-            # Use epoch + sample index for deterministic-but-varying augmentation
+            # Use epoch for augmentation seed - same augmentation for all samples in an epoch
             # Different augmentation each epoch, but reproducible across runs
-            aug_seed = (self.epoch * 10000 + index) % (2**31)
+            aug_seed = self.epoch % (2**31)
             aug_rng = np.random.RandomState(aug_seed)
             
             # Random Z-axis rotation in multiples of 90° (0°, 90°, 180°, 270°)
@@ -197,7 +251,8 @@ class Building3DReconstructionDataset(Dataset):
             # Use epoch + sample index for deterministic-but-varying sampling
             # Different points each epoch, but reproducible across runs
             sample_seed = (self.epoch * 10000 + index) % (2**31)  # Combine epoch and index
-            point_cloud = random_sampling(point_cloud, self.num_points, seed=sample_seed)
+            # Use Farthest Point Sampling for better coverage
+            point_cloud = farthest_point_sampling(point_cloud, self.num_points, seed=sample_seed)
 
         # -------------------------------Edge Vertices ------------------------
         wf_edges_vertices = np.stack((wf_vertices[wf_edges[:, 0]], wf_vertices[wf_edges[:, 1]]), axis=1)

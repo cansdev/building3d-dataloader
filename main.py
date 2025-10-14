@@ -10,18 +10,7 @@ from easydict import EasyDict
 from utils.cuda_utils import get_device, to_cuda, print_gpu_memory
 
 # Import our training module
-from train import main_training_setup, train_on_real_dataset
-
-def set_deterministic_seeds(seed=42):
-    """Set all random seeds for reproducible results"""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    print(f"Set deterministic seeds to {seed}")
+from train import train_on_real_dataset
 
 def cfg_from_yaml_file(cfg_file):
     with open(cfg_file, 'r') as f:
@@ -64,11 +53,6 @@ def load_training_data(device=None):
 
 def main():
     """Main function to load training data and start training"""
-    print("Building3D Training Pipeline with CUDA Support")
-    
-    # Set deterministic seeds for reproducible training
-    set_deterministic_seeds(42)
-    
     try:
         # Get the best available device (CUDA or CPU)
         device = get_device()

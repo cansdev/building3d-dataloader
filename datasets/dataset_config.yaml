@@ -1,6 +1,4 @@
-# Training Configuration
 Training:
-  # Model configuration
   model:
     input_dim: 5
     k_neighbors: 20
@@ -28,15 +26,13 @@ Training:
   num_epochs: 1000
   gradient_clip_norm: 1.0
 
-# Dataset Configuration
 Building3D:
   root_dir: './datasets/demo_dataset' # Building3D dataset root dir
   num_points: 2560
   use_color: True
   use_intensity: True
-  augment: False
+  augment: True  # Enable augmentation for training
   
-  # Preprocessor Configuration
   preprocessor:
     normalize: True
     use_outlier_removal: False
@@ -61,7 +57,6 @@ Building3D:
         merge_distance: 0.05
         min_group_size: 15
       
-      # Default processing parameters for all spatial clusters
       default_processing:
         outlier_removal:
           stat_k: 12
