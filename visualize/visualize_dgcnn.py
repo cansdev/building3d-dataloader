@@ -248,7 +248,7 @@ def interactive_visualization():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     config_path = os.path.join(project_root, 'datasets', 'dataset_config.yaml')
-    model_path = os.path.join(project_root, 'output', 'checkpoint_epoch_180.pth')
+    model_path = os.path.join(project_root, 'output', 'corner_detection_model.pth')
     
     # Load configuration
     if not os.path.exists(config_path):
@@ -358,7 +358,7 @@ def main():
         script_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(script_dir)
         config_path = os.path.join(project_root, 'datasets', 'dataset_config.yaml')
-        model_path = os.path.join(project_root, 'output', 'checkpoint_epoch_180.pth')
+        model_path = os.path.join(project_root, 'output', 'corner_detection_model.pth')
         
         # Load configuration and model
         if not os.path.exists(config_path):
