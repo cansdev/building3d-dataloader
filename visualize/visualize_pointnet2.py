@@ -72,133 +72,183 @@ def load_trained_model(model_path, input_channels, device):
     model.eval()
     return model
 
+from matplotlib.widgets import Slider, Button
+import matplotlib
+# Try to use interactive backend
+try:
+    matplotlib.use('TkAgg')
+except:
+    pass
+
 def visualize_pointnet2_results(model, dataset, sample_idx, device, threshold=CORNER_THRESHOLD):
     """
-    Visualize PointNet2 corner detection results for a specific sample
-    
-    Args:
-        model: Trained PointNet2 model
-        dataset: Building3D dataset
-        sample_idx: Index of sample to visualize
-        device: PyTorch device
-        threshold: Threshold for corner predictions
+    Visualize PointNet2 corner detection results for a specific sample with interactive threshold slider
     """
-    # Get sample data
     sample = dataset[sample_idx]
-    
-    # Convert numpy arrays to tensors if needed
     if isinstance(sample['point_clouds'], np.ndarray):
-        point_clouds = torch.from_numpy(sample['point_clouds']).unsqueeze(0).to(device)  # [1, N, C]
+        point_clouds = torch.from_numpy(sample['point_clouds']).unsqueeze(0).to(device)
     else:
-        point_clouds = sample['point_clouds'].unsqueeze(0).to(device)  # [1, N, C]
-    
+        point_clouds = sample['point_clouds'].unsqueeze(0).to(device)
     if isinstance(sample['wf_vertices'], np.ndarray):
-        wf_vertices = torch.from_numpy(sample['wf_vertices']).unsqueeze(0).to(device)    # [1, M, 3]
+        wf_vertices = torch.from_numpy(sample['wf_vertices']).unsqueeze(0).to(device)
     else:
-        wf_vertices = sample['wf_vertices'].unsqueeze(0).to(device)    # [1, M, 3]
-    
-    # Get ground truth corners (wireframe vertices)
+        wf_vertices = sample['wf_vertices'].unsqueeze(0).to(device)
     valid_mask = wf_vertices[0, :, 0] > -1e0
-    gt_corners = wf_vertices[0, valid_mask].cpu().numpy()  # [M_valid, 3]
-    
-    # Get PointNet2 predictions
+    gt_corners = wf_vertices[0, valid_mask].cpu().numpy()
+
     with torch.no_grad():
         outputs = model(point_clouds)
-        # Handle Hungarian model (dict output with query-based corners)
         if isinstance(outputs, dict) and 'pred_logits' in outputs and 'pred_boxes' in outputs:
-            # Query-based predictions: get corner coords and confidences
             batch_corners, batch_scores = model.get_corner_predictions(point_clouds, threshold=threshold)
-            predicted_corner_coords = batch_corners[0].cpu().numpy()  # [K, 3]
-            predicted_corner_scores = batch_scores[0].cpu().numpy()   # [K]
+            predicted_corner_coords = batch_corners[0].cpu().numpy()
+            predicted_corner_scores = batch_scores[0].cpu().numpy()
             corner_probs = None
-            corner_predictions = None
+            corner_logits = None
         else:
-            # Per-point logits model
             corner_logits = outputs[0] if isinstance(outputs, (list, tuple)) else outputs
-            corner_probs = torch.sigmoid(corner_logits[0])  # [N]
-            corner_predictions = (corner_probs > threshold).cpu().numpy()  # [N]
+            corner_probs = torch.sigmoid(corner_logits[0])
+
+    pc_xyz = point_clouds[0, :, :3].cpu().numpy()
+
+    # Initial threshold value
+    threshold_val = threshold
+
+    # Create visualization with proper spacing for slider
+    fig = plt.figure(figsize=(18, 8))
     
-    # Get point cloud coordinates
-    pc_xyz = point_clouds[0, :, :3].cpu().numpy()  # [N, 3]
-    if corner_predictions is not None:
-        predicted_corners = pc_xyz[corner_predictions]  # [K, 3]
-    else:
-        predicted_corners = predicted_corner_coords  # [K, 3]
+    # Create subplot grid: leave space at bottom for slider
+    gs = fig.add_gridspec(2, 3, height_ratios=[20, 1], hspace=0.3, top=0.95, bottom=0.1)
     
-    # Create visualization
-    fig = plt.figure(figsize=(18, 6))
-    
+    ax1 = fig.add_subplot(gs[0, 0], projection='3d')
+    ax2 = fig.add_subplot(gs[0, 1], projection='3d')
+    ax3 = fig.add_subplot(gs[0, 2], projection='3d')
+
     # Plot 1: Original point cloud
-    ax1 = fig.add_subplot(131, projection='3d')
-    ax1.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
-                c='lightblue', s=1, alpha=0.6, label='Point Cloud')
+    ax1.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], c='lightblue', s=1, alpha=0.6, label='Point Cloud')
     ax1.set_title('Original Point Cloud')
     ax1.set_xlabel('X')
     ax1.set_ylabel('Y')
     ax1.set_zlabel('Z')
     ax1.legend()
-    
+
     # Plot 2: Ground truth corners
-    ax2 = fig.add_subplot(132, projection='3d')
-    ax2.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
-                c='lightblue', s=1, alpha=0.3, label='Point Cloud')
+    ax2.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], c='lightblue', s=1, alpha=0.3, label='Point Cloud')
     if len(gt_corners) > 0:
-        ax2.scatter(gt_corners[:, 0], gt_corners[:, 1], gt_corners[:, 2], 
-                    c='red', s=50, marker='o', label='GT Corners')
+        ax2.scatter(gt_corners[:, 0], gt_corners[:, 1], gt_corners[:, 2], c='red', s=50, marker='o', label='GT Corners')
     ax2.set_title('Ground Truth Corners')
     ax2.set_xlabel('X')
     ax2.set_ylabel('Y')
     ax2.set_zlabel('Z')
     ax2.legend()
     
-    # Plot 3: Predicted corners with probability coloring (if available)
-    ax3 = fig.add_subplot(133, projection='3d')
+    # Store colorbar reference
+    colorbar_obj = [None]
     
-    # Color points by corner probability if per-point probs exist; otherwise plain
-    if corner_probs is not None:
-        scatter = ax3.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
-                             c=corner_probs.cpu().numpy(), cmap='viridis', s=2, alpha=0.8)
-    else:
-        scatter = ax3.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
-                             c='lightgray', s=1, alpha=0.6)
+    # Plot 3: Predicted corners (will be updated by slider)
+    def update_plot(threshold):
+        ax3.clear()
+        
+        # Plot point cloud with probabilities
+        if corner_probs is not None:
+            scatter = ax3.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
+                                 c=corner_probs.cpu().numpy(), cmap='viridis', 
+                                 s=2, alpha=0.8, vmin=0.0, vmax=1.0)
+            corner_predictions = (corner_probs > threshold)
+            predicted_corners = pc_xyz[corner_predictions.cpu().numpy()]
+            
+            # Update colorbar if it doesn't exist
+            if colorbar_obj[0] is None:
+                colorbar_obj[0] = plt.colorbar(scatter, ax=ax3, shrink=0.5, aspect=20)
+                colorbar_obj[0].set_label('Corner Probability')
+        else:
+            scatter = ax3.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
+                                 c='lightgray', s=1, alpha=0.6)
+            if 'predicted_corner_coords' in locals():
+                predicted_corners = predicted_corner_coords
+            else:
+                predicted_corners = np.empty((0, 3))
+        
+        # Plot predicted corners above threshold
+        if len(predicted_corners) > 0:
+            ax3.scatter(predicted_corners[:, 0], predicted_corners[:, 1], predicted_corners[:, 2],
+                        c='red', s=100, marker='s', label=f'Predicted Corners (>{threshold:.2f})',
+                        edgecolors='black', linewidth=1)
+        
+        ax3.set_title(f'PointNet2 Predictions (threshold={threshold:.2f})', fontsize=12, pad=10)
+        ax3.set_xlabel('X')
+        ax3.set_ylabel('Y')
+        ax3.set_zlabel('Z')
+        ax3.legend()
+        
+        # Print stats to console
+        if corner_probs is not None:
+            n_predicted = (corner_probs > threshold).sum().item()
+            print(f"Threshold {threshold:.2f}: {n_predicted} predicted corners")
+        
+        fig.canvas.draw_idle()
+
+    # Initial plot
+    update_plot(threshold_val)
+
+    # Create slider axes in the bottom row with better positioning
+    slider_ax = fig.add_subplot(gs[1, :])
+    slider_ax.set_position([0.15, 0.03, 0.7, 0.02])  # [left, bottom, width, height]
+    slider_ax.set_facecolor('lightgray')
     
-    # Highlight predicted corners
-    if len(predicted_corners) > 0:
-        ax3.scatter(predicted_corners[:, 0], predicted_corners[:, 1], predicted_corners[:, 2], 
-                    c='red', s=100, marker='s', label=f'Predicted Corners (>{threshold})', 
-                    edgecolors='black', linewidth=1)
+    # Create slider with better visual feedback
+    threshold_slider = Slider(
+        ax=slider_ax,
+        label='Threshold (use arrow keys or drag)',
+        valmin=0.0,
+        valmax=1.0,
+        valinit=threshold_val,
+        valstep=0.01,
+        color='steelblue',
+        track_color='lightgray'
+    )
+
+    # Connect slider to update function
+    def on_slider_change(val):
+        update_plot(val)
+
+    threshold_slider.on_changed(on_slider_change)
     
-    ax3.set_title(f'PointNet2 Predictions (threshold={threshold})')
-    ax3.set_xlabel('X')
-    ax3.set_ylabel('Y')
-    ax3.set_zlabel('Z')
-    ax3.legend()
+    # Add keyboard controls for easier threshold adjustment
+    def on_key_press(event):
+        current_val = threshold_slider.val
+        step = 0.05  # 5% increments
+        
+        if event.key == 'right' or event.key == 'up':
+            new_val = min(1.0, current_val + step)
+            threshold_slider.set_val(new_val)
+        elif event.key == 'left' or event.key == 'down':
+            new_val = max(0.0, current_val - step)
+            threshold_slider.set_val(new_val)
+        elif event.key == 'r':
+            # Reset to initial threshold
+            threshold_slider.set_val(threshold_val)
     
-    # Add colorbar for probability only when available
-    if corner_probs is not None:
-        cbar = plt.colorbar(scatter, ax=ax3, shrink=0.5, aspect=20)
-        cbar.set_label('Corner Probability')
+    fig.canvas.mpl_connect('key_press_event', on_key_press)
     
-    plt.tight_layout()
-    
-    # Print detailed statistics
+    # Add instruction text
+    fig.text(0.5, 0.005, 'Controls: Drag slider OR use Arrow Keys (←/→) to adjust | R to reset | Q to close', 
+             ha='center', fontsize=10, style='italic', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    # Print detailed statistics (initial)
     print(f"\nSample {sample_idx} Results:")
     print(f"Total points: {len(pc_xyz)}")
     print(f"Ground truth corners: {len(gt_corners)}")
-    print(f"Predicted corners (>{threshold}): {len(predicted_corners)}")
     if corner_probs is not None:
         print(f"Corner probability range: [{corner_probs.min():.3f}, {corner_probs.max():.3f}]")
         print(f"Average corner probability: {corner_probs.mean():.3f}")
         print(f"Points with prob > 0.1: {(corner_probs > 0.1).sum().item()}")
         print(f"Points with prob > 0.2: {(corner_probs > 0.2).sum().item()}")
         print(f"Points with prob > 0.3: {(corner_probs > 0.3).sum().item()}")
-    else:
-        if predicted_corners.shape[0] > 0:
-            print(f"Predicted corner score range: [{predicted_corner_scores.min():.3f}, {predicted_corner_scores.max():.3f}]")
-            print(f"Average predicted corner score: {predicted_corner_scores.mean():.3f}")
-        else:
-            print("No predicted corners above threshold.")
-    
+        print(f"Points with prob > 0.4: {(corner_probs > 0.4).sum().item()}")
+        print(f"Points with prob > 0.5: {(corner_probs > 0.5).sum().item()}")
+        print(f"Points with prob > 0.6: {(corner_probs > 0.6).sum().item()}")
+        print(f"Points with prob > 0.7: {(corner_probs > 0.7).sum().item()}")
+
     return fig
 
 def interactive_visualization():

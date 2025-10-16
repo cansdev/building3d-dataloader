@@ -407,7 +407,7 @@ def calculate_edgecross_weights(eigenvalues):
     
     # Combine normalized measures with weights - heavily optimized for edge detection
     # Each component is already normalized, so they contribute proportionally
-    vertex_weights = (0.10 * harris_classic_norm +     # Classic Harris - further reduced for edges
+    edgecross_weights = (0.10 * harris_classic_norm +     # Classic Harris - further reduced for edges
                      0.35 * harris_2d_norm +          # 2D-focused Harris - boosted for cross edges
                      0.45 * shi_tomasi_norm +         # Minimum eigenvalue - strongly rewards λ2 (EDGES!)
                      0.04 * noble_norm +              # Harmonic mean - minimal
@@ -415,17 +415,17 @@ def calculate_edgecross_weights(eigenvalues):
                      0.02 * building_corner_norm)     # Building-specific - minimal for edges
     
     # Clamp combined weights to [0, 1] range
-    vertex_weights = np.clip(vertex_weights, 0, 1)
+    edgecross_weights = np.clip(edgecross_weights, 0, 1)
     
     # Adaptive thresholding based on data distribution - very permissive for edges
-    if np.max(vertex_weights) > 0:
+    if np.max(edgecross_weights) > 0:
         # Use much lower percentile-based thresholding to keep more edge features
-        threshold = np.percentile(vertex_weights[vertex_weights > 0], 72)  # Top 28% (more permissive)
+        threshold = np.percentile(edgecross_weights[edgecross_weights > 0], 72)  # Top 28% (more permissive)
         # Also use a minimum absolute threshold to catch medium-strength features
-        abs_threshold = 0.08 * np.max(vertex_weights)  # Accept features with 8% of max response (lowered)
+        abs_threshold = 0.08 * np.max(edgecross_weights)  # Accept features with 8% of max response (lowered)
         # Use MAX to get the more restrictive threshold (prevents planar surfaces from passing)
         combined_threshold = max(threshold, abs_threshold)
-        vertex_weights = np.where(vertex_weights > combined_threshold, vertex_weights, 0)
+        edgecross_weights = np.where(edgecross_weights > combined_threshold, edgecross_weights, 0)
     
     # Additional enhancement for missed corners
     # Look for points with good corner characteristics even if response is moderate
@@ -445,16 +445,16 @@ def calculate_edgecross_weights(eigenvalues):
     
     # Boost points that meet corner criteria but might have lower response
     corner_candidates = two_significant & good_3d_structure & not_too_linear & not_too_planar
-    vertex_weights[corner_candidates] = np.maximum(vertex_weights[corner_candidates], 0.20)  # Lowered from 0.25
+    edgecross_weights[corner_candidates] = np.maximum(edgecross_weights[corner_candidates], 0.20)  # Lowered from 0.25
     
     # Remove clearly inappropriate points - extremely permissive for edge-like features
     # Too linear: very small λ2 relative to λ1 - extremely relaxed threshold
     too_linear = lambda2_safe < 0.01 * lambda1_safe  # Very relaxed from 0.015 to 0.01
-    vertex_weights[too_linear] = 0
+    edgecross_weights[too_linear] = 0
     
     # Too isotropic: all eigenvalues very similar - very relaxed
     too_isotropic = (ratio_21 > 0.97) & (ratio_32 > 0.97)  # More relaxed from 0.96 to 0.97
-    vertex_weights[too_isotropic] = 0
+    edgecross_weights[too_isotropic] = 0
     
     # Too planar: very small λ3 - improved filter for planar surfaces
     # Planar surfaces have λ1 ≈ λ2 >> λ3
@@ -462,32 +462,32 @@ def calculate_edgecross_weights(eigenvalues):
     too_planar_simple = lambda3_safe < 0.01 * lambda2_safe  # λ3 is < 1% of λ2
     too_planar_strict = (lambda3_safe < 0.02 * lambda2_safe) & (ratio_21 > 0.85)  # Very similar λ1, λ2
     too_planar = too_planar_simple | too_planar_strict
-    vertex_weights[too_planar] = 0
+    edgecross_weights[too_planar] = 0
     
     # Final enhancement with gentle power law
-    vertex_weights = np.where(vertex_weights > 0, 
-                             np.power(vertex_weights, 0.7),  # Even gentler enhancement for edges (reduced from 0.8)
+    edgecross_weights = np.where(edgecross_weights > 0, 
+                             np.power(edgecross_weights, 0.7),  # Even gentler enhancement for edges (reduced from 0.8)
                              0)
     
-    # Stretch vertex weights to full [0, 1] range
-    if np.max(vertex_weights) > 0:
-        min_val = np.min(vertex_weights)
-        max_val = np.max(vertex_weights)
+    # Stretch edgecross weights to full [0, 1] range
+    if np.max(edgecross_weights) > 0:
+        min_val = np.min(edgecross_weights)
+        max_val = np.max(edgecross_weights)
         if max_val > min_val:
             # Linear stretch: map [min, max] to [0, 1]
-            vertex_weights = (vertex_weights - min_val) / (max_val - min_val)
+            edgecross_weights = (edgecross_weights - min_val) / (max_val - min_val)
         else:
             # All non-zero values are the same, normalize to max
-            vertex_weights = vertex_weights / max_val
+            edgecross_weights = edgecross_weights / max_val
     
     # Boost high-confidence points above 0.3 threshold (lowered for more edge detection)
-    high_confidence_mask = vertex_weights > 0.3
-    vertex_weights[high_confidence_mask] *= 1.4  # 40% boost for strong features (increased)
+    high_confidence_mask = edgecross_weights > 0.3
+    edgecross_weights[high_confidence_mask] *= 1.4  # 40% boost for strong features (increased)
     
     # Re-clamp to [0, 1] after boosting
-    vertex_weights = np.clip(vertex_weights, 0, 1)
+    edgecross_weights = np.clip(edgecross_weights, 0, 1)
     
-    return vertex_weights
+    return edgecross_weights
 
 def enhance_weights(weights, weight_type="border", enhancement_factor=2.0):
     """
@@ -618,37 +618,37 @@ def visualize_border_weight_distribution(border_weights, save_path=None):
         print("Matplotlib not available for border weight distribution visualization")
 
 
-def get_high_weight_points(points, edge_weights, vertex_weights, 
-                          edge_threshold=0.7, vertex_threshold=0.7):
+def get_high_weight_points(points, edge_weights, edgecross_weights, 
+                          edge_threshold=0.7, edgecross_threshold=0.7):
     """
-    Extract points with high edge or vertex weights for analysis.
+    Extract points with high edge or edgecross weights for analysis.
     
     Args:
         points (np.ndarray): Point coordinates
         edge_weights (np.ndarray): Edge weights
-        vertex_weights (np.ndarray): Vertex weights
+        edgecross_weights (np.ndarray): Edge cross weights
         edge_threshold (float): Threshold for high edge weights
-        vertex_threshold (float): Threshold for high vertex weights
+        edgecross_threshold (float): Threshold for high edge cross weights
         
     Returns:
         dict: Dictionary containing high-weight point information
     """
     high_edge_mask = edge_weights > edge_threshold
-    high_vertex_mask = vertex_weights > vertex_threshold
+    high_edgecross_mask = edgecross_weights > edgecross_threshold
     
     result = {
         'high_edge_points': points[high_edge_mask],
         'high_edge_weights': edge_weights[high_edge_mask],
         'high_edge_indices': np.where(high_edge_mask)[0],
-        'high_vertex_points': points[high_vertex_mask],
-        'high_vertex_weights': vertex_weights[high_vertex_mask],
-        'high_vertex_indices': np.where(high_vertex_mask)[0],
+        'high_edgecross_points': points[high_edgecross_mask],
+        'high_edgecross_weights': edgecross_weights[high_edgecross_mask],
+        'high_edgecross_indices': np.where(high_edgecross_mask)[0],
         'edge_count': np.sum(high_edge_mask),
-        'vertex_count': np.sum(high_vertex_mask)
+        'edgecross_count': np.sum(high_edgecross_mask)
     }
     
     print(f"\n=== High Weight Point Summary ===")
     print(f"High edge points (>{edge_threshold}): {result['edge_count']}")
-    print(f"High vertex points (>{vertex_threshold}): {result['vertex_count']}")
+    print(f"High edge cross points (>{edgecross_threshold}): {result['edgecross_count']}")
     
     return result

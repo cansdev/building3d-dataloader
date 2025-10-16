@@ -29,9 +29,12 @@ def load_wireframe(wireframe_file):
     with open(wireframe_file) as f:
         for lines in f.readlines():
             line = lines.strip().split(' ')
+            # Skip empty lines and comments
+            if not line or not line[0] or line[0].startswith('#'):
+                continue
             if line[0] == 'v':
                 vertices.append(line[1:])
-            else:
+            elif line[0] == 'l':
                 obj_data = np.array(line[1:], dtype=np.int32).reshape(2) - 1
                 edges.add(tuple(sorted(obj_data)))
     vertices = np.array(vertices, dtype=np.float64)
@@ -153,13 +156,13 @@ class Building3DPreprocessor:
             
         # Step 4: Border Weight Assignment
         if self.compute_border_weights:
-            edge_weights, vertex_weights, border_weights = self._compute_weights(
+            edge_weights, edgecross_weights, border_weights = self._compute_weights(
                 normalized_pc[:, :3]
             )
         else:
             N = len(normalized_pc)
             edge_weights = np.zeros(N, dtype=np.float32)
-            vertex_weights = np.zeros(N, dtype=np.float32)
+            edgecross_weights = np.zeros(N, dtype=np.float32)
             border_weights = np.zeros(N, dtype=np.float32)
             
         # Step 5: Save to cache
@@ -168,7 +171,7 @@ class Building3DPreprocessor:
             normalized_pc=normalized_pc.astype(np.float32),
             group_ids=group_ids.astype(np.int32),
             edge_weights=edge_weights.astype(np.float32),
-            vertex_weights=vertex_weights.astype(np.float32),
+            edgecross_weights=edgecross_weights.astype(np.float32),
             border_weights=border_weights.astype(np.float32),
             centroid=centroid.astype(np.float32),
             max_distance=np.float32(max_distance)
@@ -258,7 +261,7 @@ class Building3DPreprocessor:
             
             # Compute individual weights
             edge_weights = calculate_edge_weights(eigenvalues)
-            vertex_weights = calculate_edgecross_weights(eigenvalues)
+            edgecross_weights = calculate_edgecross_weights(eigenvalues)
             
             # Compute unified border weights
             border_weights = compute_border_weights(
@@ -271,10 +274,10 @@ class Building3DPreprocessor:
             print(f"Warning: Weight computation failed: {e}")
             N = len(points)
             edge_weights = np.zeros(N, dtype=np.float32)
-            vertex_weights = np.zeros(N, dtype=np.float32)
+            edgecross_weights = np.zeros(N, dtype=np.float32)
             border_weights = np.zeros(N, dtype=np.float32)
         
-        return edge_weights, vertex_weights, border_weights
+        return edge_weights, edgecross_weights, border_weights
     
     def _save_cache(self, cache_path, **kwargs):
         """Save preprocessed data to .npz file"""
@@ -306,6 +309,10 @@ class Building3DReconstructionDataset(Dataset):
         # Option to include geometric features as input channels
         self.use_group_ids = getattr(dataset_config, 'use_group_ids', False)
         self.use_border_weights = getattr(dataset_config, 'use_border_weights', False)
+        
+        # Fixed normalization constant for group IDs (based on dataset analysis)
+        # Max observed group_id is 4, so we use 5 to handle 0-4 range consistently
+        self.MAX_GROUPS = 5
 
         assert split_set in ["train", "test"]
         self.split_set = split_set
@@ -375,14 +382,14 @@ class Building3DReconstructionDataset(Dataset):
         # ------------------------------- Load Data ------------------------------
         if self.use_preprocessing and self.preprocessor is not None:
             # Load from preprocessed cache
-            point_cloud, centroid, max_distance, group_ids, edge_weights, vertex_weights, border_weights = self._load_from_cache(pc_file)
+            point_cloud, centroid, max_distance, group_ids, edge_weights, edgecross_weights, border_weights = self._load_from_cache(pc_file)
         else:
             # Original pipeline: load raw point cloud
             point_cloud, centroid, max_distance = self._load_raw_point_cloud(pc_file)
             # No geometric features in original pipeline
             group_ids = None
             edge_weights = None
-            vertex_weights = None
+            edgecross_weights = None
             border_weights = None
         
         # ------------------------------- Load Wireframe ------------------------------
@@ -413,8 +420,8 @@ class Building3DReconstructionDataset(Dataset):
                 group_ids = group_ids[indices]
             if edge_weights is not None:
                 edge_weights = edge_weights[indices]
-            if vertex_weights is not None:
-                vertex_weights = vertex_weights[indices]
+            if edgecross_weights is not None:
+                edgecross_weights = edgecross_weights[indices]
             if border_weights is not None:
                 border_weights = border_weights[indices]
 
@@ -425,11 +432,9 @@ class Building3DReconstructionDataset(Dataset):
         # ------------------------------- Concatenate Geometric Features ------------------------------
         # Optionally concatenate group_ids and border_weights as additional input channels
         if self.use_group_ids and group_ids is not None:
-            # Normalize group_ids to [0, 1] range for neural network input
-            if np.max(group_ids) > 0:
-                group_ids_normalized = group_ids.astype(np.float32) / np.max(group_ids)
-            else:
-                group_ids_normalized = group_ids.astype(np.float32)
+            # Normalize group_ids using FIXED max across entire dataset
+            # This ensures consistent scaling: same group_id value means same thing across all samples
+            group_ids_normalized = np.clip(group_ids.astype(np.float32) / self.MAX_GROUPS, 0.0, 1.0)
             point_cloud = np.concatenate([point_cloud, group_ids_normalized[:, np.newaxis]], axis=1)
         
         if self.use_border_weights and border_weights is not None:
@@ -455,8 +460,8 @@ class Building3DReconstructionDataset(Dataset):
             ret_dict['group_ids'] = group_ids.astype(np.int32)
         if edge_weights is not None:
             ret_dict['edge_weights'] = edge_weights.astype(np.float32)
-        if vertex_weights is not None:
-            ret_dict['vertex_weights'] = vertex_weights.astype(np.float32)
+        if edgecross_weights is not None:
+            ret_dict['edgecross_weights'] = edgecross_weights.astype(np.float32)
         if border_weights is not None:
             ret_dict['border_weights'] = border_weights.astype(np.float32)
         
@@ -490,10 +495,10 @@ class Building3DReconstructionDataset(Dataset):
         max_distance = cached['max_distance']
         group_ids = cached['group_ids']
         edge_weights = cached['edge_weights']
-        vertex_weights = cached['vertex_weights']
+        edgecross_weights = cached['edgecross_weights']
         border_weights = cached['border_weights']
         
-        return point_cloud, centroid, max_distance, group_ids, edge_weights, vertex_weights, border_weights
+        return point_cloud, centroid, max_distance, group_ids, edge_weights, edgecross_weights, border_weights
     
     def _load_raw_point_cloud(self, pc_file):
         """Original pipeline: load and normalize raw point cloud"""
@@ -536,7 +541,7 @@ class Building3DReconstructionDataset(Dataset):
             wf_vertices[:, 1] = -1 * wf_vertices[:, 1]
 
         # Rotation along up-axis/Z-axis
-        rot_angle = (np.random.random() * np.pi / 18) - np.pi / 36  # -5 ~ +5 degree
+        rot_angle = (np.random.random() * 2 * np.pi) - np.pi  # -180 ~ +180 degree
         rot_mat = rotz(rot_angle)
         point_cloud[:, 0:3] = np.dot(point_cloud[:, 0:3], np.transpose(rot_mat))
         wf_vertices[:, 0:3] = np.dot(wf_vertices[:, 0:3], np.transpose(rot_mat))
@@ -557,7 +562,7 @@ class Building3DReconstructionDataset(Dataset):
                     # For Hungarian matching, we don't need padding - just return as list
                     # The training loop will handle variable lengths
                     ret_dict[key] = [torch.from_numpy(v.astype(np.float32)) for v in val]
-                elif key in ['group_ids', 'edge_weights', 'vertex_weights', 'border_weights']:
+                elif key in ['group_ids', 'edge_weights', 'edgecross_weights', 'border_weights']:
                     # Handle geometric features (per-point features)
                     # These are separate from point_clouds and should be stacked directly
                     ret_dict[key] = torch.tensor(np.array(input_dict[key]))
