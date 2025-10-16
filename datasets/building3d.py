@@ -165,9 +165,10 @@ class Building3DPreprocessor:
             edgecross_weights = np.zeros(N, dtype=np.float32)
             border_weights = np.zeros(N, dtype=np.float32)
             
-        # Step 5: Save to cache
+        # Step 5: Save to cache with BOTH raw and normalized coordinates
         self._save_cache(
             cache_path,
+            raw_pc=point_cloud.astype(np.float32),
             normalized_pc=normalized_pc.astype(np.float32),
             group_ids=group_ids.astype(np.int32),
             edge_weights=edge_weights.astype(np.float32),
@@ -322,17 +323,8 @@ class Building3DReconstructionDataset(Dataset):
         if logger:
             logger.info("Total Sample: %d" % len(self.pc_files))
             
-        # NEW: Initialize preprocessor
-        self.use_preprocessing = hasattr(dataset_config, 'preprocessor')
-        if self.use_preprocessing:
-            self.preprocessor = Building3DPreprocessor(dataset_config)
-            
-            # Preprocess all files if not cached
-            self._ensure_preprocessed(logger)
-        else:
-            self.preprocessor = None
-            if logger:
-                logger.info("Preprocessing disabled - using original pipeline")
+        self.preprocessor = Building3DPreprocessor(dataset_config)
+        self._ensure_preprocessed(logger)
     
     def _ensure_preprocessed(self, logger):
         """
@@ -379,24 +371,14 @@ class Building3DReconstructionDataset(Dataset):
         pc_file = self.pc_files[index]
         wireframe_file = self.wireframe_files[index]
         
-        # ------------------------------- Load Data ------------------------------
-        if self.use_preprocessing and self.preprocessor is not None:
-            # Load from preprocessed cache
-            point_cloud, centroid, max_distance, group_ids, edge_weights, edgecross_weights, border_weights = self._load_from_cache(pc_file)
-        else:
-            # Original pipeline: load raw point cloud
-            point_cloud, centroid, max_distance = self._load_raw_point_cloud(pc_file)
-            # No geometric features in original pipeline
-            group_ids = None
-            edge_weights = None
-            edgecross_weights = None
-            border_weights = None
+        point_cloud, centroid, max_distance, group_ids, edge_weights, edgecross_weights, border_weights = self._load_from_cache(pc_file)
         
         # ------------------------------- Load Wireframe ------------------------------
         wf_vertices, wf_edges = load_wireframe(wireframe_file)
         
-        # Normalize wireframe with same parameters
-        wf_vertices = (wf_vertices - centroid) / max_distance
+        # NEW: Only normalize wireframe if normalize flag is True
+        if self.normalize:
+            wf_vertices = (wf_vertices - centroid) / max_distance
         
         # ------------------------------- Random Sampling (Per Epoch) ------------------------------
         if self.num_points:
@@ -490,7 +472,20 @@ class Building3DReconstructionDataset(Dataset):
         # Load cached data
         cached = np.load(cache_path)
         
-        point_cloud = cached['normalized_pc']
+        # Choose between raw and normalized coordinates based on normalize flag
+        if self.normalize:
+            point_cloud = cached['normalized_pc']
+        else:
+            if 'raw_pc' in cached:
+                point_cloud = cached['raw_pc']
+                # Still need to normalize colors if present
+                if point_cloud.shape[1] >= 7:
+                    point_cloud = point_cloud.copy()  # Don't modify cached data
+                    point_cloud[:, 3:7] = point_cloud[:, 3:7] / 256.0
+            else:
+                print("Warning: raw_pc not found in cache, using normalized_pc")
+                point_cloud = cached['normalized_pc']
+        
         centroid = cached['centroid']
         max_distance = cached['max_distance']
         group_ids = cached['group_ids']
@@ -499,34 +494,6 @@ class Building3DReconstructionDataset(Dataset):
         border_weights = cached['border_weights']
         
         return point_cloud, centroid, max_distance, group_ids, edge_weights, edgecross_weights, border_weights
-    
-    def _load_raw_point_cloud(self, pc_file):
-        """Original pipeline: load and normalize raw point cloud"""
-        pc = np.loadtxt(pc_file, dtype=np.float64)
-        
-        # Process based on config
-        if not self.use_color:
-            point_cloud = pc[:, 0:3]
-        elif self.use_color and not self.use_intensity:
-            point_cloud = pc[:, 0:7]
-            point_cloud[:, 3:] = point_cloud[:, 3:] / 256.0
-        elif not self.use_color and self.use_intensity:
-            point_cloud = np.concatenate((pc[:, 0:3], pc[:, 7:8]), axis=1)
-        else:
-            point_cloud = pc
-            point_cloud[:, 3:7] = point_cloud[:, 3:7] / 256.0
-        
-        # Normalize
-        if self.normalize:
-            centroid = np.mean(point_cloud[:, 0:3], axis=0)
-            point_cloud[:, 0:3] -= centroid
-            max_distance = np.max(np.linalg.norm(point_cloud[:, 0:3], axis=1))
-            point_cloud[:, 0:3] /= max_distance
-        else:
-            centroid = np.zeros(3)
-            max_distance = 1.0
-        
-        return point_cloud, centroid, max_distance
     
     def _apply_augmentation(self, point_cloud, wf_vertices):
         """Apply data augmentation (flip + rotation)"""

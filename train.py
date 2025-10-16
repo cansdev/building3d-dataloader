@@ -7,33 +7,19 @@ from losses import AdaptiveCornerLoss, create_corner_labels_improved
 import os
 import numpy as np
 
-def train_model(train_loader, dataset_config):
+def train_model(train_loader, dataset_config, input_channels=None):
     """
     Train PointNet2 model with preprocessed data
     
     Args:
         train_loader: DataLoader for training data
-        test_loader: DataLoader for test data  
         dataset_config: Dataset configuration
+        input_channels: Pre-calculated input channels (if None, will calculate here for backward compatibility)
     """
     # Initialize model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Determine input channels based on dataset config
-    input_channels = 3  # xyz coordinates
-    if dataset_config.Building3D.use_color:
-        input_channels += 4  # rgba
-    if dataset_config.Building3D.use_intensity:
-        input_channels += 1  # intensity
-    
-    # NEW: Add geometric feature channels
-    if getattr(dataset_config.Building3D, 'use_group_ids', False):
-        input_channels += 1  # normalized group_id
-        print("  Including group_ids as input channel")
-    if getattr(dataset_config.Building3D, 'use_border_weights', False):
-        input_channels += 1  # border_weights
-        print("  Including border_weights as input channel")
-    
+    print(f"Using {input_channels} input channels for PointNet2 model")
     model = PointNet2CornerDetection(input_channels=input_channels)
     model = model.to(device)
     

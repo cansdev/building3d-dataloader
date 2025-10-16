@@ -18,12 +18,44 @@ def cfg_from_yaml_file(cfg_file):
         cfg = EasyDict(new_config)
         return cfg
 
+def calculate_input_dim(dataset_config):
+    """Dynamically calculate input dimensions based on enabled features"""
+    input_dim = 3  # XYZ coordinates (always present)
+    
+    # Add color channels
+    if dataset_config.Building3D.use_color:
+        input_dim += 4  # RGBA
+    
+    # Add intensity channel
+    if dataset_config.Building3D.use_intensity:
+        input_dim += 1  # Intensity
+    
+    # Add geometric features if enabled
+    if getattr(dataset_config.Building3D, 'use_group_ids', False):
+        input_dim += 1  # Normalized group IDs
+    
+    if getattr(dataset_config.Building3D, 'use_border_weights', False):
+        input_dim += 1  # Border weights
+    
+    return input_dim
+
 def train_with_preprocessed_data():
     """
     Function that loads preprocessed data and passes it to train.py for PointNet2 training
     """
     # Load dataset configuration
-    dataset_config = cfg_from_yaml_file('datasets/dataset_config.yaml')
+    config_path = os.path.join(os.path.dirname(__file__), 'datasets', 'dataset_config.yaml')
+    dataset_config = cfg_from_yaml_file(config_path)
+    
+    # Dynamically calculate and update input_dim
+    calculated_input_dim = calculate_input_dim(dataset_config)
+    
+    print(f"Calculated input_dim: {calculated_input_dim}")
+    print(f"  - XYZ: 3")
+    print(f"  - Color (RGBA): {4 if dataset_config.Building3D.use_color else 0}")
+    print(f"  - Intensity: {1 if dataset_config.Building3D.use_intensity else 0}")
+    print(f"  - Group IDs: {1 if getattr(dataset_config.Building3D, 'use_group_ids', False) else 0}")
+    print(f"  - Border weights: {1 if getattr(dataset_config.Building3D, 'use_border_weights', False) else 0}")
     
     # Build dataset with preprocessing
     building3D_dataset = build_dataset(dataset_config.Building3D)
@@ -38,7 +70,8 @@ def train_with_preprocessed_data():
     )
     
     # Call training function with preprocessed data using corner loss
-    model = train_model(train_loader, dataset_config)
+    # Pass the calculated input_dim to the training function
+    model = train_model(train_loader, dataset_config, calculated_input_dim)
     return model
 
 def main():

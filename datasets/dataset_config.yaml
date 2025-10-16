@@ -12,7 +12,6 @@ Building3D:
   use_border_weights: True   # Compute border weights AND add as input channel
 
   preprocessor:
-    normalize: True
     use_outlier_removal: False  
     cache_dir: 'datasets/preprocessed'  # Preprocessed data cache directory
     
