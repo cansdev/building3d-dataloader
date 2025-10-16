@@ -153,6 +153,7 @@ class Building3DPreprocessor:
             clean_mask = self._remove_outliers(normalized_pc, group_ids)
             normalized_pc = normalized_pc[clean_mask]
             group_ids = group_ids[clean_mask]
+            point_cloud = point_cloud[clean_mask]  # FIX: Apply mask to raw point cloud too
             
         # Step 4: Border Weight Assignment
         if self.compute_border_weights:
