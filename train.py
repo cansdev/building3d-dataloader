@@ -53,33 +53,9 @@ def train_on_real_dataset(train_loader, device, train_config):
     
     print(f"DGCNN model loaded with {sum(p.numel() for p in model.parameters()):,} parameters")
     
-    # Try to resume from checkpoint
-    checkpoint_dir = 'checkpoints'
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    checkpoint_path = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
-    
     start_epoch = 0
     best_loss = float('inf')
-    best_vertex_error = float('inf')
-    
-    if os.path.exists(checkpoint_path):
-        print(f"\nFound checkpoint at {checkpoint_path}, resuming training...")
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        start_epoch = checkpoint['epoch']
-        best_loss = checkpoint.get('best_loss', float('inf'))
-        best_vertex_error = checkpoint.get('best_vertex_error', float('inf'))
-        print(f"Resumed from epoch {start_epoch}")
-        print(f"Best loss so far: {best_loss:.6f}")
-        print(f"Best vertex error so far: {best_vertex_error:.4f}m")
-    else:
-        print("\nNo checkpoint found. Starting training from scratch.")
-    
-    print("\nPreprocessing details shown only for epoch 0...")
-    print("=" * 60)
-    
+    best_vertex_error = float('inf')    
     model.train()
     num_epochs = train_config['num_epochs']
     max_vertices = model.max_vertices
@@ -169,10 +145,31 @@ def train_on_real_dataset(train_loader, device, train_config):
             # Compute vertex error for this batch
             with torch.no_grad():
                 batch_vertex_errors = []
-                for i in range(B):
-                    V_i = num_vertices_list[i]
-                    vertex_dist_i = torch.norm(pred_coords[i:i+1, :V_i, :] - vertices_gt_padded[i:i+1, :V_i, :], dim=2)
-                    batch_vertex_errors.append(vertex_dist_i.mean().item())
+                
+                if use_hungarian:
+                    # For Hungarian loss, compute error using optimal matching
+                    from scipy.optimize import linear_sum_assignment
+                    for i in range(B):
+                        V_i = num_vertices_list[i]
+                        pred_i = pred_coords[i, :V_i, :].cpu().numpy()
+                        gt_i = vertices_gt_padded[i, :V_i, :].cpu().numpy()
+                        
+                        # Compute cost matrix (pairwise distances)
+                        cost_matrix = np.linalg.norm(pred_i[:, None, :] - gt_i[None, :, :], axis=2)
+                        
+                        # Hungarian matching
+                        pred_indices, gt_indices = linear_sum_assignment(cost_matrix)
+                        
+                        # Compute matched distances
+                        matched_dists = cost_matrix[pred_indices, gt_indices]
+                        batch_vertex_errors.append(matched_dists.mean())
+                else:
+                    # For MSE loss, assume order is correct
+                    for i in range(B):
+                        V_i = num_vertices_list[i]
+                        vertex_dist_i = torch.norm(pred_coords[i:i+1, :V_i, :] - vertices_gt_padded[i:i+1, :V_i, :], dim=2)
+                        batch_vertex_errors.append(vertex_dist_i.mean().item())
+                
                 epoch_vertex_errors.extend(batch_vertex_errors)
         
         # Step scheduler once per epoch
@@ -191,31 +188,22 @@ def train_on_real_dataset(train_loader, device, train_config):
         if avg_vertex_error < best_vertex_error:
             best_vertex_error = avg_vertex_error
         
-        # Save checkpoint every 50 epochs
-        if (epoch + 1) % 50 == 0:
-            checkpoint_save_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch + 1}.pth')
+        # Save checkpoint every 10 epochs
+        if (epoch + 1) % 10 == 0:
+            checkpoint_path = f'output/checkpoint_epoch_{epoch + 1}.pth'
+            os.makedirs('output', exist_ok=True)
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
+                'loss': avg_loss,
                 'best_loss': best_loss,
                 'best_vertex_error': best_vertex_error,
-                'train_config': train_config
-            }, checkpoint_save_path)
-            
-            # Also update the latest checkpoint
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'best_loss': best_loss,
-                'best_vertex_error': best_vertex_error,
+                'input_dim': train_config.model.input_dim,  # Save architecture info
                 'train_config': train_config
             }, checkpoint_path)
-            
-            print(f"  → Checkpoint saved at epoch {epoch + 1}")
+            print(f'Checkpoint saved: {checkpoint_path}')
         
         # Print progress every epoch
         current_lr = optimizer.param_groups[0]['lr']
@@ -226,8 +214,23 @@ def train_on_real_dataset(train_loader, device, train_config):
     print("\n" + "="*60)
     print(f"Training complete!")
     print(f"   Best loss: {best_loss:.6f}")
+    print("\n" + "="*60)
+    print(f"Training complete!")
+    print(f"   Best loss: {best_loss:.6f}")
     print(f"   Best vertex error: {best_vertex_error:.4f}m")
     print("="*60)
+
+    # Save final model
+    final_model_path = 'output/corner_detection_model.pth'
+    os.makedirs('output', exist_ok=True)
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'input_dim': train_config.model.input_dim,  # Save architecture info
+        'best_loss': best_loss,
+        'best_vertex_error': best_vertex_error,
+        'train_config': train_config
+    }, final_model_path)
+    print(f'Final model saved: {final_model_path}')
     
     # Show GPU memory
     if device.type == 'cuda':

@@ -103,10 +103,10 @@ class EdgeConv(nn.Module):
 
 class BasicDGCNN(nn.Module):
     """
-    Simple DGCNN for vertex prediction.
+    Simple DGCNN for vertex prediction with scale conditioning.
     
-    Input: [B, N, 5] where dims are [x, y, z, groupid, borderweight]
-    Output: Direct vertex coordinates (absolute positions)
+    Input: [B, N, C] point cloud + centroid [B, 3] + scale [B, 1]
+    Output: Vertex coordinates (in normalized space)
     """
     def __init__(self, input_dim=5, k=20, max_vertices=64):
         super().__init__()
@@ -114,7 +114,7 @@ class BasicDGCNN(nn.Module):
         self.max_vertices = max_vertices
         
         # 3-layer EdgeConv hierarchy with geometric features (always enabled)
-        self.edge_conv1 = EdgeConv(5, 48, k=k)
+        self.edge_conv1 = EdgeConv(input_dim, 48, k=k)
         self.edge_conv2 = EdgeConv(48, 96, k=k)
         self.edge_conv3 = EdgeConv(96, 128, k=k)
 
@@ -123,9 +123,10 @@ class BasicDGCNN(nn.Module):
         self.skip2 = nn.Conv1d(96, 128, 1, bias=False)   # 12,288
         
         # Global pooling: 128 max + 128 avg = 256
+        # Add centroid (3) + scale (1) = 260 total features
         
         self.decoder = nn.Sequential(
-            nn.Linear(256, 192),              # 49,152 + 192
+            nn.Linear(260, 192),              # 256 + 4 scale features
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(192, max_vertices * 4)  # 12,288 + 256
@@ -135,13 +136,15 @@ class BasicDGCNN(nn.Module):
         with torch.no_grad():
             self.decoder[-1].bias[3::4] = -1.0
         
-    def forward(self, x, return_absolute=True):
+    def forward(self, x, centroid=None, max_distance=None, return_absolute=True):
         """
-        Forward pass - predicts absolute vertex coordinates.
+        Forward pass - predicts vertex coordinates with scale conditioning.
         
         Args:
-            x: [B, N, 5] input point cloud [xyz, groupid, borderweight]
-            return_absolute: Kept for compatibility, always returns absolute coords
+            x: [B, N, C] input point cloud (normalized)
+            centroid: [B, 3] original centroid before normalization
+            max_distance: [B, 1] original max_distance before normalization
+            return_absolute: Kept for compatibility
         
         Returns:
             dict with vertex predictions
@@ -149,7 +152,7 @@ class BasicDGCNN(nn.Module):
         B, N, _ = x.shape
         
         # EdgeConv hierarchy
-        x_feat = x.transpose(1, 2)  # [B, 5, N]
+        x_feat = x.transpose(1, 2)  # [B, C, N]
         
         f1 = self.edge_conv1(x_feat)                  # [B, 48, N]
         f2 = self.edge_conv2(f1) + self.skip1(f1)     # [B, 96, N]
@@ -161,20 +164,32 @@ class BasicDGCNN(nn.Module):
             f3.mean(dim=2)
         ], dim=1)  # [B, 256]
         
-        # Decode to absolute coordinates
+        # Add scale conditioning if provided
+        if centroid is not None and max_distance is not None:
+            # Ensure max_distance has correct shape [B, 1]
+            if max_distance.dim() == 1:
+                max_distance = max_distance.unsqueeze(1)  # [B] -> [B, 1]
+            # Concatenate centroid and scale to global features
+            glob = torch.cat([glob, centroid, max_distance], dim=1)  # [B, 260]
+        else:
+            # Fallback: use zeros (for backward compatibility)
+            glob = torch.cat([glob, torch.zeros(B, 4, device=x.device)], dim=1)  # [B, 260]
+        
+        # Decode to coordinates (in normalized space)
         out = self.decoder(glob).view(B, self.max_vertices, 4)
         
-        coords = out[:, :, :3]   # [B, max_vertices, 3] - absolute coordinates
+        coords = out[:, :, :3]   # [B, max_vertices, 3] - normalized coordinates
         logits = out[:, :, 3]    # [B, max_vertices] - existence logits
         probs = torch.sigmoid(logits)
         
         return {
-            'vertex_coords': coords,           # Absolute coordinates
+            'vertex_coords': coords,           # Normalized coordinates
             'vertex_offsets': coords,          # Same as coords (for compatibility)
-            'pc_centroid': torch.zeros(B, 1, 3, device=x.device),  # Dummy for compatibility
+            'pc_centroid': centroid if centroid is not None else torch.zeros(B, 3, device=x.device),
             'existence_logits': logits,
             'existence_probs': probs,
             'num_vertices': (probs > 0.5).sum(dim=1).clamp(1, self.max_vertices),
             'global_features': glob,
         }
+
 

@@ -3,7 +3,7 @@
 # @Time    : 2023-08-11 3:06 p.m.
 # @Author  : shangfeng
 # @Organization: University of Calgary
-# @File    : building3d.py
+# @File    : building3d.py.py
 # @IDE     : PyCharm
 
 import os
@@ -13,7 +13,15 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from collections import defaultdict
-from utils.preprocess import create_default_preprocessor
+from tqdm import tqdm
+
+# Import preprocessing utilities
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.surface_grouping import simple_spatial_grouping
+from utils.outlier_removal import remove_statistical_outliers, remove_radius_outliers
+from utils.weight_assignment import compute_border_weights, calculate_local_features
+from utils.weight_assignment import calculate_edge_weights, calculate_edgecross_weights
+
 
 def load_wireframe(wireframe_file):
     vertices = []
@@ -21,9 +29,12 @@ def load_wireframe(wireframe_file):
     with open(wireframe_file) as f:
         for lines in f.readlines():
             line = lines.strip().split(' ')
+            # Skip empty lines and comments
+            if not line or not line[0] or line[0].startswith('#'):
+                continue
             if line[0] == 'v':
                 vertices.append(line[1:])
-            else:
+            elif line[0] == 'l':
                 obj_data = np.array(line[1:], dtype=np.int32).reshape(2) - 1
                 edges.add(tuple(sorted(obj_data)))
     vertices = np.array(vertices, dtype=np.float64)
@@ -47,77 +58,21 @@ def save_wireframe(vertices, edges, wireframe_file):
             f.write('l ' + edge + '\n')
 
 
-def random_sampling(pc, num_points, replace=None, return_choices=False, seed=None):
+def random_sampling(pc, num_points, replace=None, return_choices=False):
     r"""
-    Deterministic random sampling with optional seed for reproducibility.
     :param pc: N * 3
     :param num_points: Int
     :param replace:
     :param return_choices:
-    :param seed: Random seed for deterministic sampling
     :return:
     """
     if replace is None:
         replace = pc.shape[0] < num_points
-    
-    # Set seed for deterministic sampling if provided
-    if seed is not None:
-        np.random.seed(seed)
-    
     choices = np.random.choice(pc.shape[0], num_points, replace=replace)
     if return_choices:
         return pc[choices], choices
     else:
         return pc[choices]
-
-
-def farthest_point_sampling(pc, num_points, seed=None):
-    r"""
-    Farthest Point Sampling for better point cloud coverage.
-    Selects points that are maximally distant from each other.
-    
-    :param pc: N * D (point cloud with N points and D features, uses first 3 for distance)
-    :param num_points: Int (number of points to sample)
-    :param seed: Random seed for deterministic first point selection
-    :return: Sampled point cloud of shape (num_points, D)
-    """
-    N, D = pc.shape
-    
-    # If requesting more points than available, duplicate points to reach desired count
-    if num_points >= N:
-        # Use random sampling with replacement to reach num_points
-        if seed is not None:
-            np.random.seed(seed)
-        indices = np.random.choice(N, num_points, replace=True)
-        return pc[indices]
-    
-    # Initialize
-    xyz = pc[:, :3]  # Use only XYZ for distance computation
-    centroids = np.zeros(num_points, dtype=np.int32)
-    distances = np.ones(N) * 1e10
-    
-    # Select first point randomly (with seed for reproducibility)
-    if seed is not None:
-        np.random.seed(seed)
-    farthest = np.random.randint(0, N)
-    
-    # Iteratively select farthest points
-    for i in range(num_points):
-        centroids[i] = farthest
-        centroid_xyz = xyz[farthest, :]
-        
-        # Compute distances from current centroid to all points
-        dist = np.sum((xyz - centroid_xyz) ** 2, axis=1)
-        
-        # Update minimum distances
-        mask = dist < distances
-        distances[mask] = dist[mask]
-        
-        # Select the farthest point
-        farthest = np.argmax(distances)
-    
-    # Return sampled points with all features
-    return pc[centroids]
 
 
 def rotz(t):
@@ -127,6 +82,221 @@ def rotz(t):
     return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
 
 
+class Building3DPreprocessor:
+    """
+    Handles one-time preprocessing and caching for Building3D dataset.
+    
+    Pipeline:
+        1. Normalize (centroid + scale)
+        2. Spatial Grouping (DBSCAN-based surface segmentation)
+        3. Outlier Removal (per-group statistical + radius filtering)
+        4. Border Weight Assignment (edge + vertex + border weights)
+        5. Cache to .npz file
+    """
+    def __init__(self, dataset_config):
+        self.config = dataset_config
+        self.cache_dir = dataset_config.preprocessor.cache_dir
+        self.use_outlier_removal = dataset_config.preprocessor.use_outlier_removal
+        
+        # Use unified flags from top-level config
+        # If feature is enabled for model input, we must compute it during preprocessing
+        self.use_surface_grouping = getattr(dataset_config, 'use_group_ids', False)
+        self.compute_border_weights = getattr(dataset_config, 'use_border_weights', False)
+        
+        # Create cache directory
+        os.makedirs(self.cache_dir, exist_ok=True)
+        
+    def preprocess_and_cache(self, pc_file, split_set, use_color=True, use_intensity=True):
+        """
+        Preprocess a single point cloud and cache the result.
+        
+        Args:
+            pc_file: Path to .xyz file
+            split_set: 'train' or 'test'
+            use_color: Whether to include RGBA channels
+            use_intensity: Whether to include intensity channel
+            
+        Returns:
+            cache_path: Path to cached .npz file
+        """
+        # Generate cache path
+        cache_path = self._get_cache_path(pc_file, split_set)
+        
+        # If already cached, skip
+        if os.path.exists(cache_path):
+            return cache_path
+            
+        # Load raw point cloud
+        pc = np.loadtxt(pc_file, dtype=np.float64)
+        
+        # Extract features based on config
+        if not use_color:
+            point_cloud = pc[:, 0:3]
+        elif use_color and not use_intensity:
+            point_cloud = pc[:, 0:7]
+        elif not use_color and use_intensity:
+            point_cloud = np.concatenate((pc[:, 0:3], pc[:, 7:8]), axis=1)
+        else:
+            point_cloud = pc
+            
+        # Step 1: Normalize
+        centroid, max_distance, normalized_pc = self._normalize(point_cloud)
+        
+        # Step 2: Spatial Grouping (if enabled)
+        if self.use_surface_grouping:
+            group_ids = self._spatial_grouping(normalized_pc[:, :3])
+        else:
+            group_ids = np.zeros(len(normalized_pc), dtype=np.int32)
+            
+        # Step 3: Outlier Removal (per group if enabled)
+        if self.use_outlier_removal:
+            clean_mask = self._remove_outliers(normalized_pc, group_ids)
+            normalized_pc = normalized_pc[clean_mask]
+            group_ids = group_ids[clean_mask]
+            
+        # Step 4: Border Weight Assignment
+        if self.compute_border_weights:
+            edge_weights, edgecross_weights, border_weights = self._compute_weights(
+                normalized_pc[:, :3]
+            )
+        else:
+            N = len(normalized_pc)
+            edge_weights = np.zeros(N, dtype=np.float32)
+            edgecross_weights = np.zeros(N, dtype=np.float32)
+            border_weights = np.zeros(N, dtype=np.float32)
+            
+        # Step 5: Save to cache with BOTH raw and normalized coordinates
+        self._save_cache(
+            cache_path,
+            raw_pc=point_cloud.astype(np.float32),
+            normalized_pc=normalized_pc.astype(np.float32),
+            group_ids=group_ids.astype(np.int32),
+            edge_weights=edge_weights.astype(np.float32),
+            edgecross_weights=edgecross_weights.astype(np.float32),
+            border_weights=border_weights.astype(np.float32),
+            centroid=centroid.astype(np.float32),
+            max_distance=np.float32(max_distance)
+        )
+        
+        return cache_path
+    
+    def _normalize(self, pc):
+        """Step 1: Normalize point cloud (centroid + scale)"""
+        xyz = pc[:, :3]
+        centroid = np.mean(xyz, axis=0)
+        xyz_centered = xyz - centroid
+        max_distance = np.max(np.linalg.norm(xyz_centered, axis=1))
+        
+        if max_distance < 1e-6:
+            max_distance = 1.0
+            
+        xyz_normalized = xyz_centered / max_distance
+        
+        # Rebuild point cloud with normalized coords
+        normalized_pc = pc.copy()
+        normalized_pc[:, :3] = xyz_normalized
+        
+        # Normalize colors if present (RGBA: columns 3-6)
+        if normalized_pc.shape[1] >= 7:
+            normalized_pc[:, 3:7] = normalized_pc[:, 3:7] / 256.0
+            
+        return centroid, max_distance, normalized_pc
+    
+    def _spatial_grouping(self, points):
+        """Step 2: Spatial grouping using surface_grouping.py"""
+        params = self.config.preprocessor.grouping_params.coarse_params
+        
+        surface_groups = simple_spatial_grouping(
+            points,
+            eps=params.eps,
+            min_samples=params.min_samples,
+            auto_scale_eps=params.auto_scale_eps
+        )
+        
+        # Create group_id array
+        group_ids = np.zeros(len(points), dtype=np.int32)
+        for i, group in enumerate(surface_groups):
+            group_ids[group.indices] = i
+            
+        return group_ids
+    
+    def _remove_outliers(self, pc, group_ids):
+        """Step 3: Outlier removal per group using outlier_removal.py"""
+        params = self.config.preprocessor.outlier_params
+        points = pc[:, :3]
+        
+        # Apply outlier removal per group
+        keep_mask = np.ones(len(points), dtype=bool)
+        
+        for group_id in np.unique(group_ids):
+            group_mask = group_ids == group_id
+            group_points = points[group_mask]
+            
+            if len(group_points) < 10:
+                continue
+                
+            # Statistical outlier removal
+            try:
+                _, inlier_mask = remove_statistical_outliers(
+                    group_points,
+                    k_neighbors=params.stat_k,
+                    std_ratio=params.stat_std_ratio
+                )
+                
+                # Update global mask
+                group_indices = np.where(group_mask)[0]
+                keep_mask[group_indices[~inlier_mask]] = False
+            except Exception as e:
+                print(f"Warning: Outlier removal failed for group {group_id}: {e}")
+                continue
+        
+        return keep_mask
+    
+    def _compute_weights(self, points):
+        """Step 4: Compute border weights using weight_assignment.py"""
+        params = self.config.preprocessor.weight_params
+        
+        try:
+            # Compute eigenvalues
+            eigenvalues = calculate_local_features(points, params.k_neighbors)
+            
+            # Compute individual weights
+            edge_weights = calculate_edge_weights(eigenvalues)
+            edgecross_weights = calculate_edgecross_weights(eigenvalues)
+            
+            # Compute unified border weights
+            border_weights = compute_border_weights(
+                points,
+                k_neighbors=params.k_neighbors,
+                normalize_weights=params.normalize_weights,
+                multi_scale=params.multi_scale
+            )
+        except Exception as e:
+            print(f"Warning: Weight computation failed: {e}")
+            N = len(points)
+            edge_weights = np.zeros(N, dtype=np.float32)
+            edgecross_weights = np.zeros(N, dtype=np.float32)
+            border_weights = np.zeros(N, dtype=np.float32)
+        
+        return edge_weights, edgecross_weights, border_weights
+    
+    def _save_cache(self, cache_path, **kwargs):
+        """Save preprocessed data to .npz file"""
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        np.savez_compressed(cache_path, **kwargs)
+        
+    def _get_cache_path(self, pc_file, split_set):
+        """
+        Generate cache file path from original .xyz file.
+        
+        Example:
+            Input: datasets/demo_dataset/train/xyz/1.xyz
+            Output: datasets/preprocessed/train/1.npz
+        """
+        filename = os.path.splitext(os.path.basename(pc_file))[0]
+        return os.path.join(self.cache_dir, split_set, f"{filename}.npz")
+
+
 class Building3DReconstructionDataset(Dataset):
     def __init__(self, dataset_config, split_set, logger=None):
         self.dataset_config = dataset_config
@@ -134,28 +304,16 @@ class Building3DReconstructionDataset(Dataset):
         self.num_points = dataset_config.num_points
         self.use_color = dataset_config.use_color
         self.use_intensity = dataset_config.use_intensity
-        # Read parameters from preprocessor section (moved there to avoid duplication)
-        self.normalize = dataset_config.preprocessor.normalize
+        self.normalize = dataset_config.normalize
         self.augment = dataset_config.augment
-        self.use_surface_grouping = dataset_config.preprocessor.use_surface_grouping
-        self.use_outlier_removal = dataset_config.preprocessor.use_outlier_removal
         
-        # Epoch counter for deterministic-but-varying random sampling
-        self.epoch = 0
+        # Option to include geometric features as input channels
+        self.use_group_ids = getattr(dataset_config, 'use_group_ids', False)
+        self.use_border_weights = getattr(dataset_config, 'use_border_weights', False)
         
-        # Flag to show verbose output only on first epoch
-        self.show_preprocessing_details = True
-        
-        # Initialize preprocessor using YAML configuration
-        self.preprocessor = create_default_preprocessor()
-        
-        # Override specific settings from dataset config (now in preprocessor section)
-        if hasattr(dataset_config.preprocessor, 'use_outlier_removal'):
-            self.preprocessor.config['use_outlier_removal'] = dataset_config.preprocessor.use_outlier_removal
-        if hasattr(dataset_config.preprocessor, 'normalize'):
-            self.preprocessor.config['normalize'] = dataset_config.preprocessor.normalize
-        if hasattr(dataset_config.preprocessor, 'use_surface_grouping'):
-            self.preprocessor.config['use_surface_grouping'] = dataset_config.preprocessor.use_surface_grouping
+        # Fixed normalization constant for group IDs (based on dataset analysis)
+        # Max observed group_id is 4, so we use 5 to handle 0-4 range consistently
+        self.MAX_GROUPS = 5
 
         assert split_set in ["train", "test"]
         self.split_set = split_set
@@ -164,95 +322,106 @@ class Building3DReconstructionDataset(Dataset):
 
         if logger:
             logger.info("Total Sample: %d" % len(self.pc_files))
-            if self.use_surface_grouping:
-                logger.info("Using surface-aware processing pipeline")
-            logger.info("Outlier removal: %s" % ("Enabled" if self.use_outlier_removal else "Disabled"))
+            
+        self.preprocessor = Building3DPreprocessor(dataset_config)
+        self._ensure_preprocessed(logger)
+
+    def _ensure_preprocessed(self, logger):
+        """
+        Preprocess all files in the dataset if not already cached.
+        This runs once when dataset is initialized.
+        """
+        if logger:
+            logger.info("Checking preprocessed cache...")
+        
+        files_to_process = []
+        for pc_file in self.pc_files:
+            cache_path = self.preprocessor._get_cache_path(pc_file, self.split_set)
+            if not os.path.exists(cache_path):
+                files_to_process.append(pc_file)
+        
+        if files_to_process:
+            if logger:
+                logger.info(f"Preprocessing {len(files_to_process)} files...")
+            
+            # Preprocess with progress bar
+            for pc_file in tqdm(files_to_process, desc="Preprocessing", disable=not logger):
+                try:
+                    self.preprocessor.preprocess_and_cache(
+                        pc_file, 
+                        self.split_set,
+                        use_color=self.use_color,
+                        use_intensity=self.use_intensity
+                    )
+                except Exception as e:
+                    if logger:
+                        logger.error(f"Failed to preprocess {os.path.basename(pc_file)}: {e}")
+                    raise
+            
+            if logger:
+                logger.info("All files preprocessed and cached!")
+        else:
+            if logger:
+                logger.info("All files already cached - skipping preprocessing")
 
     def __len__(self):
         return len(self.pc_files)
-    
-    def set_epoch(self, epoch):
-        """Set the epoch number for deterministic-but-varying random sampling."""
-        self.epoch = epoch
-        # Only show preprocessing details on first epoch (epoch 0)
-        self.show_preprocessing_details = (epoch == 0)
 
     def __getitem__(self, index):
-        # ------------------------------- Point Clouds ------------------------------
-        # load point clouds
         pc_file = self.pc_files[index]
-        pc = np.loadtxt(pc_file, dtype=np.float64)
-
-        # point clouds processing
-        if not self.use_color:
-            point_cloud = pc[:, 0:3]
-        elif self.use_color and not self.use_intensity:
-            point_cloud = pc[:, 0:7]
-            point_cloud[:, 3:] = point_cloud[:, 3:] / 256.0
-        elif not self.use_color and self.use_intensity:
-            point_cloud = np.concatenate((pc[:, 0:3], pc[:, 7]), axis=1)
-        else:
-            point_cloud = pc
-            point_cloud[:, 3:7] = point_cloud[:, 3:7] / 256.0
-
-        # ------------------------------- Wireframe ------------------------------
-        # load wireframe
         wireframe_file = self.wireframe_files[index]
-        wf_vertices, wf_edges = load_wireframe(wireframe_file)
-
-        # ------------------------------- Dataset Preprocessing ------------------------------
-        # Use unified preprocessing pipeline with caching
-        result = self.preprocessor.process_point_cloud(
-                point_cloud=point_cloud,
-                wireframe_vertices=wf_vertices,
-                point_cloud_file=pc_file,
-                wireframe_file=wireframe_file,
-                use_cache=True,
-                verbose=self.show_preprocessing_details  # Only show details on first epoch
-                )
-
-        # ALWAYS use preprocessed data from the pipeline
-        point_cloud = result['processed_points']  # Always X Y Z GroupID BorderWeight
-        wf_vertices = result['processed_wireframe']  # Always processed vertices
         
+        point_cloud, centroid, max_distance, group_ids, edge_weights, edgecross_weights, border_weights = self._load_from_cache(pc_file)
+        
+        # ------------------------------- Load Wireframe ------------------------------
+        wf_vertices, wf_edges = load_wireframe(wireframe_file)
+        
+        # NEW: Only normalize wireframe if normalize flag is True
         if self.normalize:
-            # Only store metadata if normalization was used
-            centroid = result['metadata']['centroid']
-            max_distance = result['metadata']['max_distance']
-
-        # ------------------------------- Data Augmentation (BEFORE sampling) ------------------------------
-        # Apply augmentation AFTER preprocessing to preserve GroupID and BorderWeight
-        # Only augment during training, not testing
-        if self.augment and self.split_set == 'train':
-            # Use epoch for augmentation seed - same augmentation for all samples in an epoch
-            # Different augmentation each epoch, but reproducible across runs
-            aug_seed = self.epoch % (2**31)
-            aug_rng = np.random.RandomState(aug_seed)
-            
-            # Random Z-axis rotation in multiples of 90° (0°, 90°, 180°, 270°)
-            rotation_choice = aug_rng.choice([0, 1, 2, 3])  # 0, 90, 180, 270 degrees
-            rot_angle = rotation_choice * np.pi / 2
-            rot_mat = rotz(rot_angle)
-            point_cloud[:, 0:3] = np.dot(point_cloud[:, 0:3], np.transpose(rot_mat))
-            wf_vertices[:, 0:3] = np.dot(wf_vertices[:, 0:3], np.transpose(rot_mat))
-            
-            # Small Gaussian jittering (σ=0.01 in normalized space)
-            jitter_std = 0.01
-            point_jitter = aug_rng.normal(0, jitter_std, size=point_cloud[:, 0:3].shape)
-            vertex_jitter = aug_rng.normal(0, jitter_std, size=wf_vertices[:, 0:3].shape)
-            point_cloud[:, 0:3] += point_jitter
-            wf_vertices[:, 0:3] += vertex_jitter
-            
-            # Note: GroupID (column 3) and BorderWeight (column 4) remain unchanged
-            # Note: These augmentations are applied in normalized space
-
-        # ------------------------------- Random Point Sampling ------------------------------
+            wf_vertices = (wf_vertices - centroid) / max_distance
+        
+        # ------------------------------- Random Sampling (Per Epoch) ------------------------------
         if self.num_points:
-            # Use epoch + sample index for deterministic-but-varying sampling
-            # Different points each epoch, but reproducible across runs
-            sample_seed = (self.epoch * 10000 + index) % (2**31)  # Combine epoch and index
-            # Use Farthest Point Sampling for better coverage
-            point_cloud = farthest_point_sampling(point_cloud, self.num_points, seed=sample_seed)
+            current_points = len(point_cloud)
+            
+            if current_points > self.num_points:
+                # Downsample: random sampling without replacement
+                indices = np.random.choice(current_points, self.num_points, replace=False)
+            elif current_points < self.num_points:
+                # Upsample: random sampling with replacement to reach target count
+                indices = np.random.choice(current_points, self.num_points, replace=True)
+            else:
+                # Exact match: use all points
+                indices = np.arange(current_points)
+            
+            # Apply sampling to point cloud
+            point_cloud = point_cloud[indices]
+            
+            # Sample geometric features if available
+            if group_ids is not None:
+                group_ids = group_ids[indices]
+            if edge_weights is not None:
+                edge_weights = edge_weights[indices]
+            if edgecross_weights is not None:
+                edgecross_weights = edgecross_weights[indices]
+            if border_weights is not None:
+                border_weights = border_weights[indices]
+
+        # ------------------------------- Augmentation (Per Epoch) ------------------------------
+        if self.augment:
+            point_cloud, wf_vertices = self._apply_augmentation(point_cloud, wf_vertices)
+        
+        # ------------------------------- Concatenate Geometric Features ------------------------------
+        # Optionally concatenate group_ids and border_weights as additional input channels
+        if self.use_group_ids and group_ids is not None:
+            # Normalize group_ids using FIXED max across entire dataset
+            # This ensures consistent scaling: same group_id value means same thing across all samples
+            group_ids_normalized = np.clip(group_ids.astype(np.float32) / self.MAX_GROUPS, 0.0, 1.0)
+            point_cloud = np.concatenate([point_cloud, group_ids_normalized[:, np.newaxis]], axis=1)
+        
+        if self.use_border_weights and border_weights is not None:
+            # Border weights are already in [0, 1] range
+            point_cloud = np.concatenate([point_cloud, border_weights[:, np.newaxis]], axis=1)
 
         # -------------------------------Edge Vertices ------------------------
         wf_edges_vertices = np.stack((wf_vertices[wf_edges[:, 0]], wf_vertices[wf_edges[:, 1]]), axis=1)
@@ -264,17 +433,87 @@ class Building3DReconstructionDataset(Dataset):
 
         # ------------------------------- Return Dict ------------------------------
         ret_dict = {}
+        
+        # Point cloud features
         ret_dict['point_clouds'] = point_cloud.astype(np.float32)
+        
+        # NEW: Geometric features (if available)
+        if group_ids is not None:
+            ret_dict['group_ids'] = group_ids.astype(np.int32)
+        if edge_weights is not None:
+            ret_dict['edge_weights'] = edge_weights.astype(np.float32)
+        if edgecross_weights is not None:
+            ret_dict['edgecross_weights'] = edgecross_weights.astype(np.float32)
+        if border_weights is not None:
+            ret_dict['border_weights'] = border_weights.astype(np.float32)
+        
+        # Wireframe data
         ret_dict['wf_vertices'] = wf_vertices.astype(np.float32)
         ret_dict['wf_edges'] = wf_edges.astype(np.int64)
         ret_dict['wf_centers'] = wf_centers.astype(np.float32)
         ret_dict['wf_edge_number'] = wf_edge_number
         ret_dict['wf_edges_vertices'] = wf_edges_vertices.reshape((-1, 6)).astype(np.float32)
+        
+        # Normalization parameters
         if self.normalize:
-            ret_dict['centroid'] = centroid
-            ret_dict['max_distance'] = max_distance
+            ret_dict['centroid'] = centroid.astype(np.float32)
+            ret_dict['max_distance'] = np.float32(max_distance)
+            
         ret_dict['scan_idx'] = np.array(os.path.splitext(os.path.basename(pc_file))[0]).astype(np.int64)
         return ret_dict
+    
+    def _load_from_cache(self, pc_file):
+        """Load preprocessed data from cache"""
+        cache_path = self.preprocessor._get_cache_path(pc_file, self.split_set)
+        
+        if not os.path.exists(cache_path):
+            raise FileNotFoundError(f"Cache file not found: {cache_path}")
+        
+        # Load cached data
+        cached = np.load(cache_path)
+        
+        # Choose between raw and normalized coordinates based on normalize flag
+        if self.normalize:
+            point_cloud = cached['normalized_pc']
+        else:
+            if 'raw_pc' in cached:
+                point_cloud = cached['raw_pc']
+                # Still need to normalize colors if present
+                if point_cloud.shape[1] >= 7:
+                    point_cloud = point_cloud.copy()  # Don't modify cached data
+                    point_cloud[:, 3:7] = point_cloud[:, 3:7] / 256.0
+            else:
+                print("Warning: raw_pc not found in cache, using normalized_pc")
+                point_cloud = cached['normalized_pc']
+        
+        centroid = cached['centroid']
+        max_distance = cached['max_distance']
+        group_ids = cached['group_ids']
+        edge_weights = cached['edge_weights']
+        edgecross_weights = cached['edgecross_weights']
+        border_weights = cached['border_weights']
+        
+        return point_cloud, centroid, max_distance, group_ids, edge_weights, edgecross_weights, border_weights
+    
+    def _apply_augmentation(self, point_cloud, wf_vertices):
+        """Apply data augmentation (flip + rotation)"""
+        if np.random.random() > 0.5:
+            # Flipping along the YZ plane
+            point_cloud[:, 0] = -1 * point_cloud[:, 0]
+            wf_vertices[:, 0] = -1 * wf_vertices[:, 0]
+
+        if np.random.random() > 0.5:
+            # Flipping along the XZ plane
+            point_cloud[:, 1] = -1 * point_cloud[:, 1]
+            wf_vertices[:, 1] = -1 * wf_vertices[:, 1]
+
+        # Rotation along up-axis/Z-axis
+        rot_angle = (np.random.random() * 2 * np.pi) - np.pi  # -180 ~ +180 degree
+        rot_mat = rotz(rot_angle)
+        point_cloud[:, 0:3] = np.dot(point_cloud[:, 0:3], np.transpose(rot_mat))
+        wf_vertices[:, 0:3] = np.dot(wf_vertices[:, 0:3], np.transpose(rot_mat))
+        
+        return point_cloud, wf_vertices
 
     @staticmethod
     def collate_batch(batch):
@@ -286,16 +525,37 @@ class Building3DReconstructionDataset(Dataset):
         ret_dict = {}
         for key, val in input_dict.items():
             try:
-                if key in ['wf_vertices', 'wf_edges', 'wf_centers', 'wf_edges_vertices']:
-                    max_len = max([len(v) for v in val])
-                    wf = np.ones((len(batch), max_len, val[0].shape[-1]), dtype=np.float32) * -1e1
-                    for i in range(len(batch)):
-                        wf[i, :len(val[i]), :] = val[i]
-                    ret_dict[key] = torch.from_numpy(wf)
+                if key == 'wf_vertices':
+                    # For DGCNN vertex reconstruction, we need padded tensors
+                    # Find max number of vertices in batch
+                    max_vertices = max(v.shape[0] for v in val)
+                    batch_size = len(val)
+                    
+                    # Create padded tensor with padding value -10.0 (< -9.0 threshold)
+                    padded_vertices = torch.full((batch_size, max_vertices, 3), -10.0, dtype=torch.float32)
+                    
+                    # Fill with actual vertices
+                    for i, vertices in enumerate(val):
+                        num_vertices = vertices.shape[0]
+                        padded_vertices[i, :num_vertices, :] = torch.from_numpy(vertices.astype(np.float32))
+                    
+                    ret_dict[key] = padded_vertices
+                elif key in ['wf_edges', 'wf_centers', 'wf_edges_vertices']:
+                    # For other wireframe data, keep as list since DGCNN may not use these
+                    ret_dict[key] = [torch.from_numpy(v.astype(np.float32)) for v in val]
+                elif key in ['group_ids', 'edge_weights', 'edgecross_weights', 'border_weights']:
+                    # Handle geometric features (per-point features)
+                    # These are separate from point_clouds and should be stacked directly
+                    ret_dict[key] = torch.tensor(np.array(input_dict[key]))
+                elif key == 'point_clouds':
+                    # Handle point_clouds specially - stack along batch dimension
+                    # All samples should have same shape [N, C] after preprocessing
+                    ret_dict[key] = torch.from_numpy(np.stack(val, axis=0).astype(np.float32))
                 else:
                     ret_dict[key] = torch.tensor(np.array(input_dict[key]))
-            except:
-                print('Error in collate_batch: key=%s' % key)
+            except Exception as e:
+                print(f'Error in collate_batch: key={key}, error={e}')
+                print(f'  Value shapes: {[v.shape if hasattr(v, "shape") else type(v) for v in val[:3]]}')
                 raise TypeError
 
         return ret_dict

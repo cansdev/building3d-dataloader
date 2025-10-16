@@ -20,11 +20,13 @@ def cfg_from_yaml_file(cfg_file):
             new_config = yaml.load(f)
     return EasyDict(new_config)
 
-def load_training_data(device=None):
+def load_training_data(device=None, config_path=None):
     """Load and prepare all training data with full preprocessing"""
 
     # Load dataset with preprocessing enabled
-    dataset_config = cfg_from_yaml_file('datasets/dataset_config.yaml')
+    if config_path is None:
+        config_path = os.path.join(os.path.dirname(__file__), 'datasets', 'dataset_config.yaml')
+    dataset_config = cfg_from_yaml_file(config_path)
     building3D_dataset = build_dataset(dataset_config.Building3D)
     
     print(f"Dataset loaded: {len(building3D_dataset['train'])} samples")
@@ -32,24 +34,39 @@ def load_training_data(device=None):
     # Configure DataLoader with CUDA optimizations if using GPU
     use_cuda = device is not None and device.type == 'cuda'
     
-    # Create deterministic generator for DataLoader
-    generator = torch.Generator()
-    generator.manual_seed(42)
-    
     train_loader = DataLoader(
         building3D_dataset['train'], 
         batch_size=4,
-        shuffle=False,
+        shuffle=True,
         drop_last=True, 
         collate_fn=building3D_dataset['train'].collate_batch,
-        pin_memory=use_cuda,  # Pin memory for faster GPU transfer
-        num_workers=0,  # Keep simple for now
-        generator=generator  # Deterministic sampling
+        pin_memory=use_cuda
     )
     
     print(f"Total batches available: {len(train_loader)}")
     
     return train_loader
+
+def calculate_input_dim(dataset_config):
+    """Dynamically calculate input dimensions based on enabled features"""
+    input_dim = 3  # XYZ coordinates (always present)
+    
+    # Add color channels
+    if dataset_config.Building3D.use_color:
+        input_dim += 4  # RGBA
+    
+    # Add intensity channel
+    if dataset_config.Building3D.use_intensity:
+        input_dim += 1  # Intensity
+    
+    # Add geometric features if enabled
+    if getattr(dataset_config.Building3D, 'use_group_ids', False):
+        input_dim += 1  # Normalized group IDs
+    
+    if getattr(dataset_config.Building3D, 'use_border_weights', False):
+        input_dim += 1  # Border weights
+    
+    return input_dim
 
 def main():
     """Main function to load training data and start training"""
@@ -59,22 +76,21 @@ def main():
         print(f"Using device: {device}")
         
         # Load configuration
-        dataset_config = cfg_from_yaml_file('datasets/dataset_config.yaml')
+        config_path = os.path.join(os.path.dirname(__file__), 'datasets', 'dataset_config.yaml')
+        dataset_config = cfg_from_yaml_file(config_path)
         train_config = dataset_config.Training  # Get training config
         
-        train_loader = load_training_data(device)
+        # Dynamically calculate and update input_dim
+        calculated_input_dim = calculate_input_dim(dataset_config)
+        train_config.model.input_dim = calculated_input_dim
+        
+        train_loader = load_training_data(device, config_path)
 
         print("\n" + "=" * 60)
         print("STARTING TRAINING SETUP")
         print("=" * 60)
         
         training_data = train_on_real_dataset(train_loader, device, train_config)
-
-        # Save the trained model
-        if 'model' in training_data:
-            model_save_path = 'trained_dgcnn_model.pth'
-            torch.save(training_data['model'].state_dict(), model_save_path)
-            print(f"\nTrained model saved to: {model_save_path}")
 
         print("\n" + "=" * 60)
         print("Training setup complete")

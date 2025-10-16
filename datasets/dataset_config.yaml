@@ -1,12 +1,12 @@
 Training:
   model:
-    input_dim: 5
+    input_dim: auto  # Automatically calculated based on enabled features
     k_neighbors: 20
     max_vertices: 64
   
   # Loss function
   loss:
-    use_hungarian: False  # true for hungarian matching, false for MSE
+    use_hungarian: True  # true for hungarian matching, false for MSE
     coord_weight: 10.0
     existence_weight: 1.0
   
@@ -31,13 +31,16 @@ Building3D:
   num_points: 2560
   use_color: True
   use_intensity: True
-  augment: True  # Enable augmentation for training
+  normalize: True
+  augment: True
+  
+  # NEW: Use geometric features as additional input channels to PointNet2
+  # These flags control both computation (preprocessing) AND usage (as model input)
+  use_group_ids: False        # Compute surface grouping AND add group IDs as input channel
+  use_border_weights: False   # Compute border weights AND add as input channel
   
   preprocessor:
-    normalize: True
-    use_outlier_removal: False
-    use_surface_grouping: True
-    compute_border_weights: True  
+    use_outlier_removal: False  
     cache_dir: 'datasets/preprocessed'  # Preprocessed data cache directory
     
     outlier_params:
