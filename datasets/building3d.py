@@ -82,39 +82,76 @@ def rotz(t):
     return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
 
 
+def calculate_input_dim(dataset_config):
+    """
+    Dynamically calculate input dimensions based on enabled features.
+    This function computes the expected number of channels in the point cloud input.
+    
+    Args:
+        dataset_config: Dataset configuration object
+        
+    Returns:
+        input_dim: Total number of input channels
+    """
+    input_dim = 3  # XYZ coordinates (always present)
+    
+    # Add color channels
+    if dataset_config.use_color:
+        input_dim += 4  # RGBA
+    
+    # Add intensity channel
+    if dataset_config.use_intensity:
+        input_dim += 1  # Intensity
+    
+    # Add geometric features if enabled
+    if getattr(dataset_config, 'use_group_ids', False):
+        input_dim += 1  # Normalized group IDs
+    
+    if getattr(dataset_config, 'use_border_weights', False):
+        input_dim += 1  # Border weights
+    
+    return input_dim
+
+
 class Building3DPreprocessor:
     """
     Handles one-time preprocessing and caching for Building3D dataset.
     
     Pipeline:
         1. Normalize (centroid + scale)
-        2. Spatial Grouping (DBSCAN-based surface segmentation)
-        3. Outlier Removal (per-group statistical + radius filtering)
-        4. Border Weight Assignment (edge + vertex + border weights)
-        5. Cache to .npz file
+        2. Spatial Grouping (DBSCAN-based surface segmentation) - ALWAYS computed
+        3. Outlier Detection (per-group statistical + radius filtering) - ALWAYS computed, saved as boolean mask
+        4. Border Weight Assignment (edge + vertex + border weights) - ALWAYS computed
+        5. Cache ALL data to .npz file
+        
+    Note: ALL features are computed and cached regardless of config.
+    Config flags only control what gets loaded/used during training.
     """
     def __init__(self, dataset_config):
         self.config = dataset_config
         self.cache_dir = dataset_config.preprocessor.cache_dir
-        self.use_outlier_removal = dataset_config.preprocessor.use_outlier_removal
-        
-        # Use unified flags from top-level config
-        # If feature is enabled for model input, we must compute it during preprocessing
-        self.use_surface_grouping = getattr(dataset_config, 'use_group_ids', False)
-        self.compute_border_weights = getattr(dataset_config, 'use_border_weights', False)
         
         # Create cache directory
         os.makedirs(self.cache_dir, exist_ok=True)
         
-    def preprocess_and_cache(self, pc_file, split_set, use_color=True, use_intensity=True):
+    def preprocess_and_cache(self, pc_file, split_set):
         """
-        Preprocess a single point cloud and cache the result.
+        Preprocess a single point cloud and cache ALL results regardless of config.
+        
+        ALWAYS computes and caches:
+        - Raw coordinates (XYZ)
+        - Raw RGBA colors
+        - Raw intensity
+        - Normalized coordinates (XYZ)
+        - Normalized RGBA colors
+        - Normalized intensity
+        - Group IDs (surface segmentation)
+        - Border weights (edge detection)
+        - Outlier mask (boolean array indicating outliers)
         
         Args:
             pc_file: Path to .xyz file
             split_set: 'train' or 'test'
-            use_color: Whether to include RGBA channels
-            use_intensity: Whether to include intensity channel
             
         Returns:
             cache_path: Path to cached .npz file
@@ -126,64 +163,65 @@ class Building3DPreprocessor:
         if os.path.exists(cache_path):
             return cache_path
             
-        # Load raw point cloud
+        # Load raw point cloud - ALWAYS load all 8 channels (XYZ + RGBA + Intensity)
         pc = np.loadtxt(pc_file, dtype=np.float64)
         
-        # Extract features based on config
-        if not use_color:
-            point_cloud = pc[:, 0:3]
-        elif use_color and not use_intensity:
-            point_cloud = pc[:, 0:7]
-        elif not use_color and use_intensity:
-            point_cloud = np.concatenate((pc[:, 0:3], pc[:, 7:8]), axis=1)
-        else:
-            point_cloud = pc
-            
-        # Step 1: Normalize
-        centroid, max_distance, normalized_pc = self._normalize(point_cloud)
+        # Separate raw features
+        raw_xyz = pc[:, 0:3].copy()
+        raw_rgba = pc[:, 3:7].copy() if pc.shape[1] >= 7 else np.zeros((len(pc), 4), dtype=np.float64)
+        raw_intensity = pc[:, 7:8].copy() if pc.shape[1] >= 8 else np.zeros((len(pc), 1), dtype=np.float64)
         
-        # Step 2: Spatial Grouping (if enabled)
-        if self.use_surface_grouping:
-            group_ids = self._spatial_grouping(normalized_pc[:, :3])
-        else:
-            group_ids = np.zeros(len(normalized_pc), dtype=np.int32)
-            
-        # Step 3: Outlier Removal (per group if enabled)
-        if self.use_outlier_removal:
-            clean_mask = self._remove_outliers(normalized_pc, group_ids)
-            normalized_pc = normalized_pc[clean_mask]
-            group_ids = group_ids[clean_mask]
-            point_cloud = point_cloud[clean_mask]  # FIX: Apply mask to raw point cloud too
-            
-        # Step 4: Border Weight Assignment
-        if self.compute_border_weights:
-            edge_weights, edgecross_weights, border_weights = self._compute_weights(
-                normalized_pc[:, :3]
-            )
-        else:
-            N = len(normalized_pc)
-            edge_weights = np.zeros(N, dtype=np.float32)
-            edgecross_weights = np.zeros(N, dtype=np.float32)
-            border_weights = np.zeros(N, dtype=np.float32)
-            
-        # Step 5: Save to cache with BOTH raw and normalized coordinates
+        # Step 1: Normalize - create normalized versions
+        centroid, max_distance, normalized_xyz, normalized_rgba, normalized_intensity = self._normalize(
+            raw_xyz, raw_rgba, raw_intensity
+        )
+        
+        # Step 2: Spatial Grouping - ALWAYS compute
+        group_ids = self._spatial_grouping(normalized_xyz)
+        
+        # Step 3: Outlier Detection - ALWAYS compute, save as boolean mask
+        outlier_mask = self._detect_outliers(normalized_xyz, group_ids)
+        
+        # Step 4: Border Weight Assignment - ALWAYS compute
+        edge_weights, edgecross_weights, border_weights = self._compute_weights(normalized_xyz)
+        
+        # Step 5: Save ALL data to cache
         self._save_cache(
             cache_path,
-            raw_pc=point_cloud.astype(np.float32),
-            normalized_pc=normalized_pc.astype(np.float32),
+            # Raw data
+            raw_xyz=raw_xyz.astype(np.float32),
+            raw_rgba=raw_rgba.astype(np.float32),
+            raw_intensity=raw_intensity.astype(np.float32),
+            # Normalized data
+            normalized_xyz=normalized_xyz.astype(np.float32),
+            normalized_rgba=normalized_rgba.astype(np.float32),
+            normalized_intensity=normalized_intensity.astype(np.float32),
+            # Geometric features
             group_ids=group_ids.astype(np.int32),
             edge_weights=edge_weights.astype(np.float32),
             edgecross_weights=edgecross_weights.astype(np.float32),
             border_weights=border_weights.astype(np.float32),
+            # Outlier detection
+            outlier_mask=outlier_mask.astype(bool),
+            # Normalization parameters
             centroid=centroid.astype(np.float32),
             max_distance=np.float32(max_distance)
         )
         
         return cache_path
     
-    def _normalize(self, pc):
-        """Step 1: Normalize point cloud (centroid + scale)"""
-        xyz = pc[:, :3]
+    def _normalize(self, xyz, rgba, intensity):
+        """
+        Step 1: Normalize point cloud components separately.
+        
+        Returns:
+            centroid: XYZ centroid
+            max_distance: Max distance from centroid
+            normalized_xyz: XYZ normalized to unit sphere
+            normalized_rgba: RGBA normalized to [0, 1]
+            normalized_intensity: Intensity normalized to [0, 1]
+        """
+        # Normalize XYZ coordinates
         centroid = np.mean(xyz, axis=0)
         xyz_centered = xyz - centroid
         max_distance = np.max(np.linalg.norm(xyz_centered, axis=1))
@@ -191,43 +229,58 @@ class Building3DPreprocessor:
         if max_distance < 1e-6:
             max_distance = 1.0
             
-        xyz_normalized = xyz_centered / max_distance
+        normalized_xyz = xyz_centered / max_distance
         
-        # Rebuild point cloud with normalized coords
-        normalized_pc = pc.copy()
-        normalized_pc[:, :3] = xyz_normalized
+        # Normalize RGBA to [0, 1] range
+        normalized_rgba = rgba / 256.0
         
-        # Normalize colors if present (RGBA: columns 3-6)
-        if normalized_pc.shape[1] >= 7:
-            normalized_pc[:, 3:7] = normalized_pc[:, 3:7] / 256.0
-            
-        return centroid, max_distance, normalized_pc
+        # Normalize intensity to [0, 1] range (assuming 16-bit: 0-65535)
+        # Handle edge case where intensity might be all zeros
+        intensity_max = np.max(intensity)
+        if intensity_max > 0:
+            normalized_intensity = intensity / 65535.0  # 16-bit normalization
+        else:
+            normalized_intensity = intensity.copy()
+        
+        return centroid, max_distance, normalized_xyz, normalized_rgba, normalized_intensity
     
     def _spatial_grouping(self, points):
-        """Step 2: Spatial grouping using surface_grouping.py"""
+        """
+        Step 2: Spatial grouping using surface_grouping.py
+        ALWAYS computed regardless of config.
+        """
         params = self.config.preprocessor.grouping_params.coarse_params
         
-        surface_groups = simple_spatial_grouping(
-            points,
-            eps=params.eps,
-            min_samples=params.min_samples,
-            auto_scale_eps=params.auto_scale_eps
-        )
-        
-        # Create group_id array
-        group_ids = np.zeros(len(points), dtype=np.int32)
-        for i, group in enumerate(surface_groups):
-            group_ids[group.indices] = i
+        try:
+            surface_groups = simple_spatial_grouping(
+                points,
+                eps=params.eps,
+                min_samples=params.min_samples,
+                auto_scale_eps=params.auto_scale_eps
+            )
+            
+            # Create group_id array
+            group_ids = np.zeros(len(points), dtype=np.int32)
+            for i, group in enumerate(surface_groups):
+                group_ids[group.indices] = i
+        except Exception as e:
+            print(f"Warning: Spatial grouping failed: {e}, using default group 0")
+            group_ids = np.zeros(len(points), dtype=np.int32)
             
         return group_ids
     
-    def _remove_outliers(self, pc, group_ids):
-        """Step 3: Outlier removal per group using outlier_removal.py"""
-        params = self.config.preprocessor.outlier_params
-        points = pc[:, :3]
+    def _detect_outliers(self, points, group_ids):
+        """
+        Step 3: Detect outliers per group using outlier_removal.py
+        ALWAYS computed regardless of config.
         
-        # Apply outlier removal per group
-        keep_mask = np.ones(len(points), dtype=bool)
+        Returns:
+            outlier_mask: Boolean array where True = outlier, False = inlier
+        """
+        params = self.config.preprocessor.outlier_params
+        
+        # Initialize as all inliers
+        outlier_mask = np.zeros(len(points), dtype=bool)
         
         for group_id in np.unique(group_ids):
             group_mask = group_ids == group_id
@@ -244,17 +297,20 @@ class Building3DPreprocessor:
                     std_ratio=params.stat_std_ratio
                 )
                 
-                # Update global mask
+                # Mark outliers in global mask
                 group_indices = np.where(group_mask)[0]
-                keep_mask[group_indices[~inlier_mask]] = False
+                outlier_mask[group_indices[~inlier_mask]] = True
             except Exception as e:
-                print(f"Warning: Outlier removal failed for group {group_id}: {e}")
+                print(f"Warning: Outlier detection failed for group {group_id}: {e}")
                 continue
         
-        return keep_mask
+        return outlier_mask
     
     def _compute_weights(self, points):
-        """Step 4: Compute border weights using weight_assignment.py"""
+        """
+        Step 4: Compute border weights using weight_assignment.py
+        ALWAYS computed regardless of config.
+        """
         params = self.config.preprocessor.weight_params
         
         try:
@@ -273,7 +329,7 @@ class Building3DPreprocessor:
                 multi_scale=params.multi_scale
             )
         except Exception as e:
-            print(f"Warning: Weight computation failed: {e}")
+            print(f"Warning: Weight computation failed: {e}, using zeros")
             N = len(points)
             edge_weights = np.zeros(N, dtype=np.float32)
             edgecross_weights = np.zeros(N, dtype=np.float32)
@@ -308,9 +364,10 @@ class Building3DReconstructionDataset(Dataset):
         self.normalize = dataset_config.normalize
         self.augment = dataset_config.augment
         
-        # Option to include geometric features as input channels
+        # Config flags to control what features to USE (all are always COMPUTED)
         self.use_group_ids = getattr(dataset_config, 'use_group_ids', False)
         self.use_border_weights = getattr(dataset_config, 'use_border_weights', False)
+        self.use_outlier_removal = dataset_config.preprocessor.use_outlier_removal
         
         # Fixed normalization constant for group IDs (based on dataset analysis)
         # Max observed group_id is 4, so we use 5 to handle 0-4 range consistently
@@ -331,6 +388,7 @@ class Building3DReconstructionDataset(Dataset):
         """
         Preprocess all files in the dataset if not already cached.
         This runs once when dataset is initialized.
+        ALL features are computed regardless of config.
         """
         if logger:
             logger.info("Checking preprocessed cache...")
@@ -343,17 +401,12 @@ class Building3DReconstructionDataset(Dataset):
         
         if files_to_process:
             if logger:
-                logger.info(f"Preprocessing {len(files_to_process)} files...")
+                logger.info(f"Preprocessing {len(files_to_process)} files (computing ALL features)...")
             
             # Preprocess with progress bar
             for pc_file in tqdm(files_to_process, desc="Preprocessing", disable=not logger):
                 try:
-                    self.preprocessor.preprocess_and_cache(
-                        pc_file, 
-                        self.split_set,
-                        use_color=self.use_color,
-                        use_intensity=self.use_intensity
-                    )
+                    self.preprocessor.preprocess_and_cache(pc_file, self.split_set)
                 except Exception as e:
                     if logger:
                         logger.error(f"Failed to preprocess {os.path.basename(pc_file)}: {e}")
@@ -372,12 +425,20 @@ class Building3DReconstructionDataset(Dataset):
         pc_file = self.pc_files[index]
         wireframe_file = self.wireframe_files[index]
         
-        point_cloud, centroid, max_distance, group_ids, edge_weights, edgecross_weights, border_weights = self._load_from_cache(pc_file)
+        # Load from cache - ALL data is available
+        point_cloud, centroid, max_distance, group_ids, border_weights, outlier_mask = self._load_from_cache(pc_file)
+        
+        # Apply outlier filtering if enabled in config
+        if self.use_outlier_removal:
+            inlier_mask = ~outlier_mask
+            point_cloud = point_cloud[inlier_mask]
+            group_ids = group_ids[inlier_mask]
+            border_weights = border_weights[inlier_mask]
         
         # ------------------------------- Load Wireframe ------------------------------
         wf_vertices, wf_edges = load_wireframe(wireframe_file)
         
-        # NEW: Only normalize wireframe if normalize flag is True
+        # Only normalize wireframe if normalize flag is True
         if self.normalize:
             wf_vertices = (wf_vertices - centroid) / max_distance
         
@@ -395,18 +456,10 @@ class Building3DReconstructionDataset(Dataset):
                 # Exact match: use all points
                 indices = np.arange(current_points)
             
-            # Apply sampling to point cloud
+            # Apply sampling to all arrays
             point_cloud = point_cloud[indices]
-            
-            # Sample geometric features if available
-            if group_ids is not None:
-                group_ids = group_ids[indices]
-            if edge_weights is not None:
-                edge_weights = edge_weights[indices]
-            if edgecross_weights is not None:
-                edgecross_weights = edgecross_weights[indices]
-            if border_weights is not None:
-                border_weights = border_weights[indices]
+            group_ids = group_ids[indices]
+            border_weights = border_weights[indices]
 
         # ------------------------------- Augmentation (Per Epoch) ------------------------------
         if self.augment:
@@ -414,13 +467,12 @@ class Building3DReconstructionDataset(Dataset):
         
         # ------------------------------- Concatenate Geometric Features ------------------------------
         # Optionally concatenate group_ids and border_weights as additional input channels
-        if self.use_group_ids and group_ids is not None:
+        if self.use_group_ids:
             # Normalize group_ids using FIXED max across entire dataset
-            # This ensures consistent scaling: same group_id value means same thing across all samples
             group_ids_normalized = np.clip(group_ids.astype(np.float32) / self.MAX_GROUPS, 0.0, 1.0)
             point_cloud = np.concatenate([point_cloud, group_ids_normalized[:, np.newaxis]], axis=1)
         
-        if self.use_border_weights and border_weights is not None:
+        if self.use_border_weights:
             # Border weights are already in [0, 1] range
             point_cloud = np.concatenate([point_cloud, border_weights[:, np.newaxis]], axis=1)
 
@@ -438,15 +490,9 @@ class Building3DReconstructionDataset(Dataset):
         # Point cloud features
         ret_dict['point_clouds'] = point_cloud.astype(np.float32)
         
-        # NEW: Geometric features (if available)
-        if group_ids is not None:
-            ret_dict['group_ids'] = group_ids.astype(np.int32)
-        if edge_weights is not None:
-            ret_dict['edge_weights'] = edge_weights.astype(np.float32)
-        if edgecross_weights is not None:
-            ret_dict['edgecross_weights'] = edgecross_weights.astype(np.float32)
-        if border_weights is not None:
-            ret_dict['border_weights'] = border_weights.astype(np.float32)
+        # Geometric features (always available in cache, returned for debugging/analysis)
+        ret_dict['group_ids'] = group_ids.astype(np.int32)
+        ret_dict['border_weights'] = border_weights.astype(np.float32)
         
         # Wireframe data
         ret_dict['wf_vertices'] = wf_vertices.astype(np.float32)
@@ -464,7 +510,22 @@ class Building3DReconstructionDataset(Dataset):
         return ret_dict
     
     def _load_from_cache(self, pc_file):
-        """Load preprocessed data from cache"""
+        """
+        Load preprocessed data from cache.
+        
+        Assembles point cloud based on config flags:
+        - normalize: use normalized vs raw coordinates
+        - use_color: include RGBA channels
+        - use_intensity: include intensity channel
+        
+        Returns:
+            point_cloud: Assembled point cloud with selected features [N, C]
+            centroid: Normalization centroid [3]
+            max_distance: Normalization scale factor
+            group_ids: Surface group IDs [N]
+            border_weights: Border detection weights [N]
+            outlier_mask: Boolean mask of outliers [N]
+        """
         cache_path = self.preprocessor._get_cache_path(pc_file, self.split_set)
         
         if not os.path.exists(cache_path):
@@ -473,28 +534,35 @@ class Building3DReconstructionDataset(Dataset):
         # Load cached data
         cached = np.load(cache_path)
         
-        # Choose between raw and normalized coordinates based on normalize flag
+        # Select coordinates based on normalize flag
         if self.normalize:
-            point_cloud = cached['normalized_pc']
+            xyz = cached['normalized_xyz']
+            rgba = cached['normalized_rgba']
+            intensity = cached['normalized_intensity']
         else:
-            if 'raw_pc' in cached:
-                point_cloud = cached['raw_pc']
-                # Still need to normalize colors if present
-                if point_cloud.shape[1] >= 7:
-                    point_cloud = point_cloud.copy()  # Don't modify cached data
-                    point_cloud[:, 3:7] = point_cloud[:, 3:7] / 256.0
-            else:
-                print("Warning: raw_pc not found in cache, using normalized_pc")
-                point_cloud = cached['normalized_pc']
+            xyz = cached['raw_xyz']
+            rgba = cached['raw_rgba']
+            intensity = cached['raw_intensity']
         
+        # Assemble point cloud based on config
+        components = [xyz]
+        
+        if self.use_color:
+            components.append(rgba)
+        
+        if self.use_intensity:
+            components.append(intensity)
+        
+        point_cloud = np.concatenate(components, axis=1)
+        
+        # Load other cached data
         centroid = cached['centroid']
         max_distance = cached['max_distance']
         group_ids = cached['group_ids']
-        edge_weights = cached['edge_weights']
-        edgecross_weights = cached['edgecross_weights']
         border_weights = cached['border_weights']
+        outlier_mask = cached['outlier_mask']
         
-        return point_cloud, centroid, max_distance, group_ids, edge_weights, edgecross_weights, border_weights
+        return point_cloud, centroid, max_distance, group_ids, border_weights, outlier_mask
     
     def _apply_augmentation(self, point_cloud, wf_vertices):
         """Apply data augmentation (flip + rotation)"""
@@ -530,7 +598,7 @@ class Building3DReconstructionDataset(Dataset):
                     # For Hungarian matching, we don't need padding - just return as list
                     # The training loop will handle variable lengths
                     ret_dict[key] = [torch.from_numpy(v.astype(np.float32)) for v in val]
-                elif key in ['group_ids', 'edge_weights', 'edgecross_weights', 'border_weights']:
+                elif key in ['group_ids', 'border_weights']:
                     # Handle geometric features (per-point features)
                     # These are separate from point_clouds and should be stacked directly
                     ret_dict[key] = torch.tensor(np.array(input_dict[key]))

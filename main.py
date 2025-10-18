@@ -3,6 +3,7 @@ import subprocess
 import sys
 
 from datasets import build_dataset
+from datasets.building3d import calculate_input_dim
 import yaml
 from easydict import EasyDict
 from torch.utils.data import DataLoader
@@ -18,27 +19,6 @@ def cfg_from_yaml_file(cfg_file):
         cfg = EasyDict(new_config)
         return cfg
 
-def calculate_input_dim(dataset_config):
-    """Dynamically calculate input dimensions based on enabled features"""
-    input_dim = 3  # XYZ coordinates (always present)
-    
-    # Add color channels
-    if dataset_config.Building3D.use_color:
-        input_dim += 4  # RGBA
-    
-    # Add intensity channel
-    if dataset_config.Building3D.use_intensity:
-        input_dim += 1  # Intensity
-    
-    # Add geometric features if enabled
-    if getattr(dataset_config.Building3D, 'use_group_ids', False):
-        input_dim += 1  # Normalized group IDs
-    
-    if getattr(dataset_config.Building3D, 'use_border_weights', False):
-        input_dim += 1  # Border weights
-    
-    return input_dim
-
 def train_with_preprocessed_data():
     """
     Function that loads preprocessed data and passes it to train.py for PointNet2 training
@@ -47,8 +27,8 @@ def train_with_preprocessed_data():
     config_path = os.path.join(os.path.dirname(__file__), 'datasets', 'dataset_config.yaml')
     dataset_config = cfg_from_yaml_file(config_path)
     
-    # Dynamically calculate and update input_dim
-    calculated_input_dim = calculate_input_dim(dataset_config)
+    # Dynamically calculate and update input_dim using the function from building3d.py
+    calculated_input_dim = calculate_input_dim(dataset_config.Building3D)
     
     print(f"Calculated input_dim: {calculated_input_dim}")
     print(f"  - XYZ: 3")
@@ -61,12 +41,17 @@ def train_with_preprocessed_data():
     building3D_dataset = build_dataset(dataset_config.Building3D)
     
     # Create data loaders for training and testing
+    # Enable pin_memory for faster CPU->GPU transfer
+    # Enable num_workers for parallel data loading
     train_loader = DataLoader(
         building3D_dataset['train'], 
-        batch_size=12, 
+        batch_size=3, 
         shuffle=True, 
         drop_last=True, 
-        collate_fn=building3D_dataset['train'].collate_batch
+        collate_fn=building3D_dataset['train'].collate_batch,
+        pin_memory=True,      # Speeds up CPU->GPU transfer
+        num_workers=4,        # Parallel data loading (adjust based on CPU cores)
+        persistent_workers=True  # Keep workers alive between epochs
     )
     
     # Call training function with preprocessed data using corner loss
