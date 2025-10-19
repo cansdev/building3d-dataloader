@@ -7,14 +7,33 @@ class PointNet2CornerDetection(nn.Module):
     """
     PointNet2 for corner point detection with specific SA/FP architecture
     """
-    def __init__(self, input_channels=3):
+    def __init__(self, config):
         super(PointNet2CornerDetection, self).__init__()
-        # Feature channels = total channels - 3 (xyz coordinates)
-        feature_channels = max(0, input_channels - 3)
-        self.input_channels = input_channels
+        
+        # Extract configuration
+        self.input_channels = config.get('input_channels', 3)
+        self.has_border_weights = config.get('use_border_weights', False)
+        
+        # Calculate feature channels (excluding XYZ and optional border weights)
+        # Border weights are handled separately via attention if present
+        feature_channels = self.input_channels - 3  # Remove XYZ
+        if self.has_border_weights:
+            feature_channels -= 1  # Remove border weights channel
+        feature_channels = max(0, feature_channels)
+        
         self.feature_channels = feature_channels
         
-        print(f"    CornerNet init: total_channels={input_channels}, feature_channels={feature_channels}")
+        # Create learnable border attention weight if border weights are used
+        if self.has_border_weights:
+            self.border_attention_weight = nn.Parameter(torch.tensor([0.0]))
+            self.border_dropout = nn.Dropout(p=0.5)  # Dropout on border attention
+            self.border_weights = None  # Will be set during forward pass
+        else:
+            self.border_attention_weight = None
+            self.border_dropout = None
+            self.border_weights = None
+        
+        print(f"    CornerNet init: total_channels={self.input_channels}, feature_channels={feature_channels}, border_attention={self.has_border_weights}")
         
         # Set Abstraction layers with 4x, 8x, 16x, 64x downsampling
         # SA1: 4x downsampling (2560 -> 640 points)
@@ -52,7 +71,7 @@ class PointNet2CornerDetection(nn.Module):
     def forward(self, xyz):
         """
         Input:
-            xyz: point cloud data [B, N, C] 
+            xyz: point cloud data [B, N, C] where C = 3 (XYZ) + features [+ border_weights]
         Output:
             corner_logits: [B, N] binary classification logits per point
             corner_features: [B, 128, N] per-point features
@@ -60,12 +79,21 @@ class PointNet2CornerDetection(nn.Module):
         B, N, C = xyz.shape
         
         # Extract coordinates (first 3 dimensions)
-        l0_xyz = xyz[:, :, 0:3].permute(0, 2, 1).contiguous()
-        
-        # Use additional features if available (C > 3)
-        if C > 3:
-            l0_points = xyz[:, :, 3:C].permute(0, 2, 1).contiguous()
+        l0_xyz = xyz[:, :, 0:3].permute(0, 2, 1).contiguous()  # [B, 3, N]
+
+        if self.has_border_weights and self.feature_channels > 0:
+            # Split: features (dims 3 to C-1) and border weights (last dim)
+            l0_features = xyz[:, :, 3:C-1].permute(0, 2, 1).contiguous()  # [B, feature_channels, N]
+            self.border_weights = xyz[:, :, C-1:C].permute(0, 2, 1).contiguous()  # [B, 1, N]
+            
+            # Border attention will be applied AFTER feature learning in FP1
+            l0_points = l0_features  # [B, feature_channels, N]
+            
+        elif self.feature_channels > 0:
+            # Use all remaining channels as features
+            l0_points = xyz[:, :, 3:C].permute(0, 2, 1).contiguous()  # [B, feature_channels, N]
         else:
+            # No features at all (XYZ only)
             l0_points = None
         
         # Encoder: 4 Set Abstraction layers with downsampling
@@ -79,6 +107,19 @@ class PointNet2CornerDetection(nn.Module):
         l2_points = self.fp3(l2_xyz, l3_xyz, l2_points, l3_points)  
         l1_points = self.fp2(l1_xyz, l2_xyz, l1_points, l2_points)
         l0_points = self.fp1(l0_xyz, l1_xyz, l0_points, l1_points)
+        
+        # Apply border attention to LEARNED features (after full encode-decode)
+        if self.has_border_weights:
+            # Constrained attention: weight bounded to [0, 0.12] via sigmoid
+            constrained_weight = 0.12 * torch.sigmoid(self.border_attention_weight)
+            
+            # Compute attention boost
+            border_boost = constrained_weight * self.border_weights  # [B, 1, N]
+            border_boost = self.border_dropout(border_boost)  # Dropout on attention signal
+            
+            # Apply to LEARNED features: attended = features * (1 + border_boost)
+            attention_factor = 1.0 + border_boost  # [B, 1, N]
+            l0_points = l0_points * attention_factor  # [B, 128, N]
         
         # Binary classification head
         feat = F.relu(self.bn1(self.conv1(l0_points)))

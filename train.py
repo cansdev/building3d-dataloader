@@ -13,14 +13,28 @@ def train_model(train_loader, dataset_config, input_channels=None):
     
     Args:
         train_loader: DataLoader for training data
-        dataset_config: Dataset configuration
+        dataset_config: Dataset configuration (full config object)
         input_channels: Pre-calculated input channels (if None, will calculate here for backward compatibility)
     """
     # Initialize model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
+    # Access the Building3D nested config
+    building3d_cfg = dataset_config.Building3D
+    
+    # Build model configuration dictionary
+    model_config = {
+        'use_color': building3d_cfg.use_color,
+        'use_intensity': building3d_cfg.use_intensity,
+        'use_group_ids': getattr(building3d_cfg, 'use_group_ids', False),
+        'use_border_weights': getattr(building3d_cfg, 'use_border_weights', False),
+        'normalize': building3d_cfg.normalize,
+        'num_points': building3d_cfg.num_points,
+        'input_channels': input_channels
+    }
+    
     print(f"Using {input_channels} input channels for PointNet2 model")
-    model = PointNet2CornerDetection(input_channels=input_channels)
+    model = PointNet2CornerDetection(config=model_config)
     model = model.to(device)
     
     # Initialize optimizer and loss function
@@ -108,22 +122,76 @@ def train_model(train_loader, dataset_config, input_channels=None):
         if epoch % 10 == 0:
             checkpoint_path = f'output/checkpoint_epoch_{epoch}.pth'
             os.makedirs('output', exist_ok=True)
-            torch.save({
+            
+            # Include border attention weight if applicable
+            checkpoint_data = {
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': avg_loss,
-                'input_channels': input_channels,  # Save architecture info
-            }, checkpoint_path)
+                'input_channels': input_channels,
+                'config': model_config,
+            }
+            
+            # Add learned border attention weight if enabled
+            if model_config['use_border_weights'] and model.border_attention_weight is not None:
+                raw_weight = model.border_attention_weight.item()
+                constrained_weight = 0.2 * torch.sigmoid(torch.tensor(raw_weight)).item()
+                checkpoint_data['border_attention_weight'] = raw_weight
+                checkpoint_data['border_attention_weight_constrained'] = constrained_weight
+            
+            torch.save(checkpoint_data, checkpoint_path)
             print(f'Checkpoint saved: {checkpoint_path}')
+            print(f'  Config: use_color={model_config["use_color"]}, '
+                  f'use_intensity={model_config["use_intensity"]}, '
+                  f'use_group_ids={model_config["use_group_ids"]}, '
+                  f'use_border_weights={model_config["use_border_weights"]}')
+            
+            # Display learned border attention weight (both raw and constrained)
+            if model_config['use_border_weights'] and model.border_attention_weight is not None:
+                raw_weight = model.border_attention_weight.item()
+                constrained_weight = 0.12 * torch.sigmoid(torch.tensor(raw_weight)).item()
+                print(f'  Border attention: raw={raw_weight:.4f}, effective={constrained_weight:.4f} (max_boost=12%)')
     
     # Save final model
     final_model_path = 'output/corner_detection_model.pth'
-    torch.save({
+    
+    final_model_data = {
         'model_state_dict': model.state_dict(),
-        'input_channels': input_channels,  # Save architecture info
-    }, final_model_path)
+        'input_channels': input_channels,
+        'config': model_config,
+    }
+    
+    # Add learned border attention weight if enabled
+    if model_config['use_border_weights'] and model.border_attention_weight is not None:
+        raw_weight = model.border_attention_weight.item()
+        constrained_weight = 0.2 * torch.sigmoid(torch.tensor(raw_weight)).item()
+        final_model_data['border_attention_weight'] = raw_weight
+        final_model_data['border_attention_weight_constrained'] = constrained_weight
+    
+    torch.save(final_model_data, final_model_path)
     print(f'Final model saved: {final_model_path}')
+    print(f'Model configuration:')
+    print(f'  use_color: {model_config["use_color"]}')
+    print(f'  use_intensity: {model_config["use_intensity"]}')
+    print(f'  use_group_ids: {model_config["use_group_ids"]}')
+    print(f'  use_border_weights: {model_config["use_border_weights"]}')
+    print(f'  normalize: {model_config["normalize"]}')
+    print(f'  num_points: {model_config["num_points"]}')
+    print(f'  input_channels: {model_config["input_channels"]}')
+    
+    # Display learned border attention weight
+    if model_config['use_border_weights'] and model.border_attention_weight is not None:
+        raw_weight = model.border_attention_weight.item()
+        constrained_weight = 0.12 * torch.sigmoid(torch.tensor(raw_weight)).item()
+        print(f'  border_attention: raw={raw_weight:.4f}, effective={constrained_weight:.4f} (max_boost=12%)')
+    print(f'  normalize: {model_config["normalize"]}')
+    print(f'  num_points: {model_config["num_points"]}')
+    print(f'  input_channels: {model_config["input_channels"]}')
+    
+    # Display learned border attention weight
+    if model_config['use_border_weights'] and model.border_attention_weight is not None:
+        print(f'  border_attention_weight: {model.border_attention_weight.item():.4f}')
     
     return model
 

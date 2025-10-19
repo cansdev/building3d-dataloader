@@ -8,7 +8,7 @@ Building3D:
   
   # NEW: Use geometric features as additional input channels to PointNet2
   # These flags control both computation (preprocessing) AND usage (as model input)
-  use_group_ids: True        # Compute surface grouping AND add group IDs as input channel
+  use_group_ids: False       # Compute surface grouping AND add group IDs as input channel
   use_border_weights: True   # Compute border weights AND add as input channel
 
   preprocessor:

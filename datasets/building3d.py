@@ -447,9 +447,19 @@ class Building3DReconstructionDataset(Dataset):
             current_points = len(point_cloud)
             
             if current_points > self.num_points:
+                # For test data, use deterministic sampling for reproducibility
+                if self.split_set == "test":
+                    # Use scan_idx as seed for deterministic sampling
+                    scan_idx = int(os.path.splitext(os.path.basename(pc_file))[0])
+                    np.random.seed(scan_idx)
                 # Downsample: random sampling without replacement
                 indices = np.random.choice(current_points, self.num_points, replace=False)
             elif current_points < self.num_points:
+                # For test data, use deterministic sampling for reproducibility
+                if self.split_set == "test":
+                    # Use scan_idx as seed for deterministic sampling
+                    scan_idx = int(os.path.splitext(os.path.basename(pc_file))[0])
+                    np.random.seed(scan_idx)
                 # Upsample: random sampling with replacement to reach target count
                 indices = np.random.choice(current_points, self.num_points, replace=True)
             else:
@@ -462,7 +472,8 @@ class Building3DReconstructionDataset(Dataset):
             border_weights = border_weights[indices]
 
         # ------------------------------- Augmentation (Per Epoch) ------------------------------
-        if self.augment:
+        # Disable augmentation for test data to ensure reproducibility
+        if self.augment and self.split_set == "train":
             point_cloud, wf_vertices = self._apply_augmentation(point_cloud, wf_vertices)
         
         # ------------------------------- Concatenate Geometric Features ------------------------------
