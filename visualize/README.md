@@ -44,4 +44,4 @@ python visualize/visualize_pointnet2.py --sample 0 --split test --threshold 0.5
 
 ## Integration
 
-The `visualize_pointnet2.py` script is automatically called after training when you run `main.py` and choose to run visualization.
+The `visualize_pointnet2.py` script is automatically called after training when you run `train.py` and choose to run visualization.

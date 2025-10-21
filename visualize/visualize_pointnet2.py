@@ -146,6 +146,14 @@ def setup_environment_non_interactive(model_path=None):
     elif not os.path.isabs(dataset_config.Building3D.root_dir):
         dataset_config.Building3D.root_dir = os.path.join(project_root, dataset_config.Building3D.root_dir)
     
+    # Fix the cache_dir path to be absolute and point to root-level preprocessed folder
+    if hasattr(dataset_config.Building3D, 'preprocessor') and hasattr(dataset_config.Building3D.preprocessor, 'cache_dir'):
+        cache_dir = dataset_config.Building3D.preprocessor.cache_dir
+        if cache_dir.startswith('./'):
+            dataset_config.Building3D.preprocessor.cache_dir = os.path.join(project_root, cache_dir[2:])
+        elif not os.path.isabs(cache_dir):
+            dataset_config.Building3D.preprocessor.cache_dir = os.path.join(project_root, cache_dir)
+    
     # Use the dataloader's calculate_input_dim function
     input_channels = calculate_input_dim(dataset_config.Building3D)
     
@@ -193,6 +201,14 @@ def setup_environment():
     elif not os.path.isabs(dataset_config.Building3D.root_dir):
         dataset_config.Building3D.root_dir = os.path.join(project_root, dataset_config.Building3D.root_dir)
     
+    # Fix the cache_dir path to be absolute and point to root-level preprocessed folder
+    if hasattr(dataset_config.Building3D, 'preprocessor') and hasattr(dataset_config.Building3D.preprocessor, 'cache_dir'):
+        cache_dir = dataset_config.Building3D.preprocessor.cache_dir
+        if cache_dir.startswith('./'):
+            dataset_config.Building3D.preprocessor.cache_dir = os.path.join(project_root, cache_dir[2:])
+        elif not os.path.isabs(cache_dir):
+            dataset_config.Building3D.preprocessor.cache_dir = os.path.join(project_root, cache_dir)
+    
     # Use the dataloader's calculate_input_dim function
     input_channels = calculate_input_dim(dataset_config.Building3D)
     
@@ -204,7 +220,7 @@ def setup_environment():
         pth_files = detect_model_files(project_root)
         model_path = choose_model_file(pth_files)
     except FileNotFoundError as e:
-        raise FileNotFoundError(f"{e}\nPlease train the model first by running main.py")
+        raise FileNotFoundError(f"{e}\nPlease train the model first by running train.py")
     
     # Load dataset
     building3D_dataset = build_dataset(dataset_config.Building3D)
@@ -473,7 +489,7 @@ def interactive_visualization():
     except (FileNotFoundError, Exception) as e:
         print(f"Error: {e}")
         if "Model file not found" in str(e):
-            print("Please train the model first by running main.py")
+            print("Please train the model first by running train.py")
         return
     
     # Select dataset split
