@@ -252,7 +252,7 @@ def train_with_preprocessed_data():
 
 def main():
     """
-    Main program flow - calls training with preprocessed data
+    Main program flow - trains the model
     """
     # Train the model
     train_with_preprocessed_data()

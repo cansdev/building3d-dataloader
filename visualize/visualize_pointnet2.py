@@ -304,11 +304,54 @@ try:
 except:
     pass
 
-def visualize_pointnet2_results(model, dataset, sample_idx, device, threshold=CORNER_THRESHOLD):
+def load_refined_predictions(scan_idx, refined_dir='output/refined_predictions'):
+    """
+    Load refined predictions from DBSCAN clustering if available
+    
+    Args:
+        scan_idx: Scan index to load
+        refined_dir: Directory containing refined predictions
+        
+    Returns:
+        Dictionary with refined predictions or None if not found
+    """
+    # Get the path relative to the script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    refined_path = os.path.join(project_root, refined_dir, f"{scan_idx}_refined.npz")
+    
+    if not os.path.exists(refined_path):
+        return None
+    
+    try:
+        data = np.load(refined_path)
+        return {
+            'raw_corners': data['raw_corners'],
+            'raw_probs': data['raw_probs'],
+            'refined_corners': data['refined_corners'],
+            'cluster_labels': data['cluster_labels'],
+            'cluster_sizes': data['cluster_sizes']
+        }
+    except Exception as e:
+        print(f"Warning: Could not load refined predictions: {e}")
+        return None
+
+
+def visualize_pointnet2_results(model, dataset, sample_idx, device, threshold=CORNER_THRESHOLD, use_refined=True):
     """
     Visualize PointNet2 corner detection results for a specific sample with interactive threshold slider
+    
+    Args:
+        model: Trained PointNet2 model
+        dataset: Dataset to visualize from
+        sample_idx: Sample index
+        device: Device to run inference on
+        threshold: Initial threshold for corner detection
+        use_refined: If True, use DBSCAN-refined predictions; if False, use raw predictions
     """
     sample = dataset[sample_idx]
+    scan_idx = int(sample['scan_idx'])
+    
     if isinstance(sample['point_clouds'], np.ndarray):
         point_clouds = torch.from_numpy(sample['point_clouds']).unsqueeze(0).to(device)
     else:
@@ -320,6 +363,18 @@ def visualize_pointnet2_results(model, dataset, sample_idx, device, threshold=CO
     valid_mask = wf_vertices[0, :, 0] > -1e0
     gt_corners = wf_vertices[0, valid_mask].cpu().numpy()
 
+    # Try to load refined predictions first
+    refined_data = None
+    if use_refined:
+        refined_data = load_refined_predictions(scan_idx)
+        if refined_data is not None:
+            print(f"✓ Using DBSCAN-refined predictions for scan {scan_idx}")
+            print(f"  Raw corners: {len(refined_data['raw_corners'])}")
+            print(f"  Refined corners: {len(refined_data['refined_corners'])}")
+        else:
+            print(f"⚠ No refined predictions found for scan {scan_idx}, using raw model predictions")
+
+    # Always run model inference to get raw predictions for visualization
     with torch.no_grad():
         outputs = model(point_clouds)
         if isinstance(outputs, dict) and 'pred_logits' in outputs and 'pred_boxes' in outputs:
@@ -338,34 +393,37 @@ def visualize_pointnet2_results(model, dataset, sample_idx, device, threshold=CO
     threshold_val = threshold
 
     # Create visualization with proper spacing for slider
-    fig = plt.figure(figsize=(16, 8))
+    fig = plt.figure(figsize=(24, 8))
     
-    # Create subplot grid: 2 columns for 2 plots, leave space at bottom for slider
-    gs = fig.add_gridspec(2, 2, height_ratios=[20, 1], hspace=0.3, top=0.95, bottom=0.1, wspace=0.3)
+    # Create subplot grid: 3 columns for 3 plots, leave space at bottom for slider
+    gs = fig.add_gridspec(2, 3, height_ratios=[20, 1], hspace=0.3, top=0.95, bottom=0.1, wspace=0.3)
     
-    ax2 = fig.add_subplot(gs[0, 0], projection='3d')
-    ax3 = fig.add_subplot(gs[0, 1], projection='3d')
+    ax1 = fig.add_subplot(gs[0, 0], projection='3d')
+    ax2 = fig.add_subplot(gs[0, 1], projection='3d')
+    ax3 = fig.add_subplot(gs[0, 2], projection='3d')
 
     # Plot 1: Ground truth corners
-    ax2.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], c='lightblue', s=1, alpha=0.3, label='Point Cloud')
+    ax1.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], c='lightblue', s=1, alpha=0.3, label='Point Cloud')
     if len(gt_corners) > 0:
-        ax2.scatter(gt_corners[:, 0], gt_corners[:, 1], gt_corners[:, 2], c='red', s=50, marker='o', label='GT Corners')
-    ax2.set_title('Ground Truth Corners')
-    ax2.set_xlabel('X')
-    ax2.set_ylabel('Y')
-    ax2.set_zlabel('Z')
-    ax2.legend()
+        ax1.scatter(gt_corners[:, 0], gt_corners[:, 1], gt_corners[:, 2], c='red', s=50, marker='o', label='GT Corners')
+    ax1.set_title('Ground Truth Corners')
+    ax1.set_xlabel('X')
+    ax1.set_ylabel('Y')
+    ax1.set_zlabel('Z')
+    ax1.legend()
     
-    # Store colorbar reference
+    # Store colorbar reference for raw predictions
     colorbar_obj = [None]
     
-    # Plot 2: Predicted corners (will be updated by slider)
+    # Plot 2: Raw predictions (will be updated by slider)
+    # Plot 3: Refined predictions (static if available)
     def update_plot(threshold):
+        ax2.clear()
         ax3.clear()
         
-        # Plot point cloud with probabilities
+        # Plot 2: Raw predictions with threshold slider
         if corner_probs is not None:
-            scatter = ax3.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
+            scatter = ax2.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
                                  c=corner_probs.cpu().numpy(), cmap='viridis', 
                                  s=2, alpha=0.8, vmin=0.0, vmax=1.0)
             corner_predictions = (corner_probs > threshold)
@@ -373,32 +431,86 @@ def visualize_pointnet2_results(model, dataset, sample_idx, device, threshold=CO
             
             # Update colorbar if it doesn't exist
             if colorbar_obj[0] is None:
-                colorbar_obj[0] = plt.colorbar(scatter, ax=ax3, shrink=0.5, aspect=20)
+                colorbar_obj[0] = plt.colorbar(scatter, ax=ax2, shrink=0.5, aspect=20)
                 colorbar_obj[0].set_label('Corner Probability')
+            
+            # Plot predicted corners above threshold
+            if len(predicted_corners) > 0:
+                ax2.scatter(predicted_corners[:, 0], predicted_corners[:, 1], predicted_corners[:, 2],
+                           c='red', s=100, marker='s', label=f'Raw Corners (>{threshold:.2f})',
+                           edgecolors='black', linewidth=1)
+            
+            ax2.set_title(f'Raw Predictions (threshold={threshold:.2f})\n{len(predicted_corners)} corners', 
+                         fontsize=12, pad=10)
+            
+            # Print stats to console
+            n_predicted = (corner_probs > threshold).sum().item()
+            print(f"Threshold {threshold:.2f}: {n_predicted} raw predicted corners")
         else:
-            scatter = ax3.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
-                                 c='lightgray', s=1, alpha=0.6)
+            ax2.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
+                       c='lightgray', s=1, alpha=0.6)
             if 'predicted_corner_coords' in locals():
                 predicted_corners = predicted_corner_coords
             else:
                 predicted_corners = np.empty((0, 3))
+            
+            if len(predicted_corners) > 0:
+                ax2.scatter(predicted_corners[:, 0], predicted_corners[:, 1], predicted_corners[:, 2],
+                           c='red', s=100, marker='s', label=f'Raw Predictions',
+                           edgecolors='black', linewidth=1)
+            
+            ax2.set_title(f'Raw Predictions', fontsize=12, pad=10)
         
-        # Plot predicted corners above threshold
-        if len(predicted_corners) > 0:
-            ax3.scatter(predicted_corners[:, 0], predicted_corners[:, 1], predicted_corners[:, 2],
-                        c='red', s=100, marker='s', label=f'Predicted Corners (>{threshold:.2f})',
-                        edgecolors='black', linewidth=1)
+        ax2.set_xlabel('X')
+        ax2.set_ylabel('Y')
+        ax2.set_zlabel('Z')
+        ax2.legend()
         
-        ax3.set_title(f'PointNet2 Predictions (threshold={threshold:.2f})', fontsize=12, pad=10)
+        # Plot 3: Refined predictions (if available)
+        if refined_data is not None:
+            # Show point cloud
+            ax3.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
+                       c='lightblue', s=1, alpha=0.3, label='Point Cloud')
+            
+            # Show refined corners (DBSCAN centroids)
+            refined_corners = refined_data['refined_corners']
+            if len(refined_corners) > 0:
+                ax3.scatter(refined_corners[:, 0], refined_corners[:, 1], refined_corners[:, 2],
+                           c='red', s=150, marker='*', label=f'Refined Corners (DBSCAN)',
+                           edgecolors='darkred', linewidths=2, alpha=0.9)
+            
+            # Optionally show raw corners with cluster colors
+            raw_corners = refined_data['raw_corners']
+            cluster_labels = refined_data['cluster_labels']
+            if len(raw_corners) > 0:
+                # Color by cluster
+                unique_labels = np.unique(cluster_labels)
+                colors = plt.cm.tab20(np.linspace(0, 1, len(unique_labels)))
+                for i, label in enumerate(unique_labels):
+                    if label == -1:
+                        # Noise points
+                        mask = cluster_labels == label
+                        ax3.scatter(raw_corners[mask, 0], raw_corners[mask, 1], raw_corners[mask, 2],
+                                   c='gray', s=20, alpha=0.3, marker='x')
+                    else:
+                        mask = cluster_labels == label
+                        ax3.scatter(raw_corners[mask, 0], raw_corners[mask, 1], raw_corners[mask, 2],
+                                   c=[colors[i]], s=30, alpha=0.4, marker='o')
+            
+            ax3.set_title(f'DBSCAN Refined Predictions\n{len(refined_corners)} refined corners from {len(raw_corners)} raw predictions', 
+                         fontsize=12, pad=10)
+        else:
+            # No refined data available - show message
+            ax3.scatter(pc_xyz[:, 0], pc_xyz[:, 1], pc_xyz[:, 2], 
+                       c='lightgray', s=1, alpha=0.3, label='Point Cloud')
+            ax3.text(0.5, 0.5, 0.5, 'No refined predictions available\nRun test.py first', 
+                    transform=ax3.transAxes, ha='center', va='center',
+                    fontsize=12, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
         ax3.set_xlabel('X')
         ax3.set_ylabel('Y')
         ax3.set_zlabel('Z')
         ax3.legend()
-        
-        # Print stats to console
-        if corner_probs is not None:
-            n_predicted = (corner_probs > threshold).sum().item()
-            print(f"Threshold {threshold:.2f}: {n_predicted} predicted corners")
         
         fig.canvas.draw_idle()
 
@@ -450,10 +562,19 @@ def visualize_pointnet2_results(model, dataset, sample_idx, device, threshold=CO
              ha='center', fontsize=10, style='italic', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
     # Print detailed statistics (initial)
-    print(f"\nSample {sample_idx} Results:")
+    print(f"\nSample {sample_idx} (Scan {scan_idx}) Results:")
     print(f"Total points: {len(pc_xyz)}")
     print(f"Ground truth corners: {len(gt_corners)}")
-    if corner_probs is not None:
+    
+    if refined_data is not None:
+        print(f"\nDBSCAN Refinement Statistics:")
+        print(f"Raw predictions: {len(refined_data['raw_corners'])}")
+        print(f"Refined corners: {len(refined_data['refined_corners'])}")
+        print(f"Clusters formed: {len(np.unique(refined_data['cluster_labels'][refined_data['cluster_labels'] != -1]))}")
+        print(f"Noise points: {(refined_data['cluster_labels'] == -1).sum()}")
+        print(f"Reduction: {len(refined_data['raw_corners']) - len(refined_data['refined_corners'])} corners removed")
+    elif corner_probs is not None:
+        print(f"\nRaw Model Predictions:")
         print(f"Corner probability range: [{corner_probs.min():.3f}, {corner_probs.max():.3f}]")
         print(f"Average corner probability: {corner_probs.mean():.3f}")
         print(f"Points with prob > 0.1: {(corner_probs > 0.1).sum().item()}")
@@ -530,7 +651,8 @@ def interactive_visualization():
             sample_idx = int(choice)
             if 0 <= sample_idx < len(dataset):
                 print(f"\nVisualizing sample {sample_idx}...")
-                fig = visualize_pointnet2_results(model, dataset, sample_idx, env['device'], threshold=CORNER_THRESHOLD)
+                # In interactive mode, always try to use refined predictions
+                fig = visualize_pointnet2_results(model, dataset, sample_idx, env['device'], threshold=CORNER_THRESHOLD, use_refined=True)
                 plt.show()
             else:
                 print(f"Please enter a number between 0 and {len(dataset)-1}")
@@ -548,8 +670,11 @@ def main():
                        help='Dataset split to use (default: test)')
     parser.add_argument('--model', type=str, default=None,
                        help='Path to specific model file (if not provided, uses default or interactive selection)')
+    parser.add_argument('--no-refined', action='store_true',
+                       help='Use raw model predictions instead of DBSCAN-refined predictions')
     
     args = parser.parse_args()
+    use_refined = not args.no_refined
     
     if args.sample is not None:
         # Non-interactive mode - visualize specific sample
@@ -571,7 +696,7 @@ def main():
                 print(f"Error: Sample index {args.sample} out of range (0-{len(dataset)-1})")
                 return
             
-            fig = visualize_pointnet2_results(model, dataset, args.sample, env['device'], args.threshold)
+            fig = visualize_pointnet2_results(model, dataset, args.sample, env['device'], args.threshold, use_refined=use_refined)
             plt.show()
             
         except (FileNotFoundError, Exception) as e:
