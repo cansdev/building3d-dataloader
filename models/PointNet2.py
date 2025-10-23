@@ -11,8 +11,10 @@ class PointNet2CornerDetection(nn.Module):
         super(PointNet2CornerDetection, self).__init__()
         
         # Extract configuration
-        self.input_channels = config.get('input_channels', 3)
+        self.input_channels     = config.get('input_channels', 3)
         self.has_border_weights = config.get('use_border_weights', False)
+        use_fps                 = config.get('use_fps', True)
+        use_voxel               = not use_fps
         
         # Calculate feature channels (excluding XYZ and optional border weights)
         # Border weights are handled separately via attention if present
@@ -33,20 +35,21 @@ class PointNet2CornerDetection(nn.Module):
             self.border_dropout = None
             self.border_weights = None
         
-        print(f"    CornerNet init: total_channels={self.input_channels}, feature_channels={feature_channels}, border_attention={self.has_border_weights}")
+        sampling_method = "FPS" if use_fps else "Voxel"
+        print(f"    CornerNet init: total_channels={self.input_channels}, feature_channels={feature_channels}, border_attention={self.has_border_weights}, sampling={sampling_method}")
         
         # Set Abstraction layers with 4x, 8x, 16x, 64x downsampling
         # SA1: 4x downsampling (2560 -> 640 points)
-        self.sa1 = PointNetSetAbstractionMsg(640, [0.05, 0.1], [16, 32], feature_channels, [[32, 32, 64], [64, 64, 128]])
-        
-        # SA2: 8x downsampling (640 -> 320 points) 
-        self.sa2 = PointNetSetAbstractionMsg(320, [0.1, 0.2], [16, 32], 192, [[64, 64, 128], [128, 128, 256]])
-        
+        self.sa1 = PointNetSetAbstractionMsg(640, [0.05, 0.1], [16, 32], feature_channels, [[32, 32, 64], [64, 64, 128]], use_voxel=use_voxel)
+
+        # SA2: 8x downsampling (640 -> 320 points)
+        self.sa2 = PointNetSetAbstractionMsg(320, [0.1, 0.2], [16, 32], 192, [[64, 64, 128], [128, 128, 256]], use_voxel=use_voxel)
+
         # SA3: 16x downsampling (320 -> 160 points)
-        self.sa3 = PointNetSetAbstractionMsg(160, [0.2, 0.4], [16, 32], 384, [[128, 128, 256], [256, 256, 512]])
-        
+        self.sa3 = PointNetSetAbstractionMsg(160, [0.2, 0.4], [16, 32], 384, [[128, 128, 256], [256, 256, 512]], use_voxel=use_voxel)
+
         # SA4: 64x downsampling (160 -> 40 points)
-        self.sa4 = PointNetSetAbstraction(40, 0.4, 32, 768 + 3, [256, 512, 1024], False)
+        self.sa4 = PointNetSetAbstraction(40, 0.4, 32, 768 + 3, [256, 512, 1024], False, use_voxel=use_voxel)
         
         # Feature Propagation layers (upsampling)
         # FP4: 40 -> 160 points

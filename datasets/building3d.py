@@ -14,6 +14,7 @@ import torch
 from torch.utils.data import Dataset
 from collections import defaultdict
 from tqdm import tqdm
+from multiprocessing import Pool, cpu_count
 
 # Import preprocessing utilities
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -111,6 +112,15 @@ def calculate_input_dim(dataset_config):
         input_dim += 1  # Border weights
     
     return input_dim
+
+
+def _preprocess_single_file(args):
+    pc_file, preprocessor, split_set = args
+    try:
+        preprocessor.preprocess_and_cache(pc_file, split_set)
+        return True
+    except Exception as e:
+        return (False, pc_file, str(e))
 
 
 class Building3DPreprocessor:
@@ -385,11 +395,6 @@ class Building3DReconstructionDataset(Dataset):
         self._ensure_preprocessed(logger)
     
     def _ensure_preprocessed(self, logger):
-        """
-        Preprocess all files in the dataset if not already cached.
-        This runs once when dataset is initialized.
-        ALL features are computed regardless of config.
-        """
         if logger:
             logger.info("Checking preprocessed cache...")
         
@@ -400,17 +405,26 @@ class Building3DReconstructionDataset(Dataset):
                 files_to_process.append(pc_file)
         
         if files_to_process:
+            num_cores = max(1, cpu_count() - 1)
             if logger:
-                logger.info(f"Preprocessing {len(files_to_process)} files (computing ALL features)...")
+                logger.info(f"Preprocessing {len(files_to_process)} files using {num_cores} CPU cores...")
             
-            # Preprocess with progress bar
-            for pc_file in tqdm(files_to_process, desc="Preprocessing", disable=not logger):
-                try:
-                    self.preprocessor.preprocess_and_cache(pc_file, self.split_set)
-                except Exception as e:
+            args_list = [(pc_file, self.preprocessor, self.split_set) for pc_file in files_to_process]
+            
+            with Pool(processes=num_cores) as pool:
+                results = list(tqdm(
+                    pool.imap(_preprocess_single_file, args_list),
+                    total=len(files_to_process),
+                    desc="Preprocessing",
+                    disable=not logger
+                ))
+            
+            failed = [r for r in results if r is not True]
+            if failed:
+                for _, pc_file, error in failed:
                     if logger:
-                        logger.error(f"Failed to preprocess {os.path.basename(pc_file)}: {e}")
-                    raise
+                        logger.error(f"Failed to preprocess {os.path.basename(pc_file)}: {error}")
+                raise RuntimeError(f"Failed to preprocess {len(failed)} files")
             
             if logger:
                 logger.info("All files preprocessed and cached!")

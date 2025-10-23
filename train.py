@@ -10,6 +10,7 @@ import yaml
 from easydict import EasyDict
 from datasets import build_dataset
 from datasets.building3d import calculate_input_dim
+import time
 
 def train_model(train_loader, dataset_config, input_channels=None):
     """
@@ -34,6 +35,7 @@ def train_model(train_loader, dataset_config, input_channels=None):
         'use_border_weights': getattr(building3d_cfg, 'use_border_weights', False),
         'normalize': building3d_cfg.normalize,
         'num_points': building3d_cfg.num_points,
+        'use_fps': getattr(building3d_cfg, 'use_fps', True),
         'input_channels': input_channels
     }
     
@@ -56,8 +58,11 @@ def train_model(train_loader, dataset_config, input_channels=None):
     print(f"Model input channels: {input_channels}")
     print(f"Training samples: {len(train_loader.dataset)}")
     
+    training_start_time = time.time()
+    
     # Training loop
     for epoch in range(num_epochs):
+        epoch_start_time = time.time()
         model.train()
         total_loss = 0.0
         num_batches = 0
@@ -116,8 +121,10 @@ def train_model(train_loader, dataset_config, input_channels=None):
                       f'Distance: {loss_dict["distance_loss"].item():.4f}, '
                       f'Corners: {num_corners:.0f}/{total_points} ({corner_ratio:.3f})')
         
+        epoch_time = time.time() - epoch_start_time
+        total_elapsed = time.time() - training_start_time
         avg_loss = total_loss / num_batches
-        print(f'Epoch {epoch} completed. Average Loss: {avg_loss:.4f}')
+        print(f'Epoch {epoch} completed. Average Loss: {avg_loss:.4f}, Time: {epoch_time:.2f}s, Total: {total_elapsed:.2f}s ({total_elapsed/60:.2f}min)')
         
         # Update adaptive loss for next epoch
         criterion.update_epoch(epoch)
@@ -156,6 +163,11 @@ def train_model(train_loader, dataset_config, input_channels=None):
                 raw_weight = model.border_attention_weight.item()
                 constrained_weight = 0.12 * torch.sigmoid(torch.tensor(raw_weight)).item()
                 print(f'  Border attention: raw={raw_weight:.4f}, effective={constrained_weight:.4f} (max_boost=12%)')
+    
+    total_training_time = time.time() - training_start_time
+    print(f'\n{"="*60}')
+    print(f'Training completed! Total time: {total_training_time:.2f}s ({total_training_time/60:.2f} minutes)')
+    print(f'{"="*60}\n')
     
     # Save final model
     final_model_path = 'output/corner_detection_model.pth'

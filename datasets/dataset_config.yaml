@@ -5,7 +5,8 @@ Building3D:
   use_intensity: True
   normalize: True
   augment: True
-  
+  use_fps: False
+
   # NEW: Use geometric features as additional input channels to PointNet2
   # These flags control both computation (preprocessing) AND usage (as model input)
   use_group_ids: False       # Compute surface grouping AND add group IDs as input channel
